@@ -1,0 +1,15 @@
+__pycache__/
+*.pyc
+*.pyo
+*.spec
+*.exe
+build/
+dist/
+backups/
+reports/
+devices.txt
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
