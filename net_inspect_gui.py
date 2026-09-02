@@ -1826,6 +1826,425 @@ class SecurityTestPanel(ttk.Frame):
             pass
 
 
+# ═══════════════════════════════════════════════════════════════
+# 主动探测引擎（V3.3 Active Test）——标准协议故障定位，合法合规
+# 场景：带新机器去现场，间歇性故障在通信正常时主动探测定位
+# ═══════════════════════════════════════════════════════════════
+
+# 隐藏子进程窗口（Windows 控制台程序，如 arp -a）
+_NO_WINDOW = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+
+
+def _local_mac() -> bytes:
+    """本机 MAC（探测用 chaddr），失败返回 6 字节 0。"""
+    try:
+        out = subprocess.run(["getmac", "/fo", "csv", "/nh"], capture_output=True,
+                             text=True, encoding="gbk", errors="replace",
+                             timeout=5, creationflags=_NO_WINDOW).stdout or ""
+        m = re.search(r"([0-9a-f]{2}-[0-9a-f]{2}-[0-9a-f]{2}-[0-9a-f]{2}-[0-9a-f]{2}-[0-9a-f]{2})",
+                      out, re.I)
+        if m:
+            return bytes.fromhex(m.group(1).replace("-", ""))
+    except Exception:
+        pass
+    return b"\x00\x00\x00\x00\x00\x00"
+
+
+def icmp_ping(host: str, count: int = 4, timeout: float = 2.0) -> tuple:
+    """标准 ping（系统命令，无管理员要求）→ (reachable, rtt_list, err)。
+
+    主动探测用系统 ping 更可靠（raw socket 需要管理员且本机回环收不到）；
+    流量压测的高压 ICMP 仍用 TrafficGenerator 的 raw socket 实现。
+    """
+    try:
+        out = subprocess.run(
+            ["ping", "-n", str(count), "-w", str(int(timeout * 1000)), host],
+            capture_output=True, text=True, encoding="gbk", errors="replace",
+            timeout=count * (timeout + 1) + 5,
+            creationflags=_NO_WINDOW).stdout or ""
+    except subprocess.TimeoutExpired:
+        return False, [], "ping 命令超时"
+    except OSError as e:
+        return False, [], f"ping 命令失败: {e}"
+    rtts = [float(m) for m in re.findall(r"(?:time|时间)[=<](\d+)ms", out, re.I)]
+    if rtts:
+        return True, rtts[:count], None
+    low = out.lower()
+    if "unreachable" in low or "无法访问" in out or "timed out" in low or "超时" in out:
+        return False, [], None
+    if "ttl" in low or "存活" in out or "bytes" in low:
+        return True, [], None
+    return False, [], None
+
+
+def dns_probe(dns_server: str, domain: str = "www.baidu.com",
+              expected_ip: str = "", timeout: float = 5.0) -> tuple:
+    """DNS A 记录查询（UDP 53）→ (status, answers, rtt, err)。
+
+    status: ok(有响应且匹配预期) / warn(响应但 IP 与预期不符=疑似重定向) /
+            fail(无响应) / na(参数错)
+    """
+    try:
+        socket.inet_aton(dns_server)
+    except OSError:
+        return "na", [], None, f"DNS 服务器 IP 格式错误: {dns_server}"
+    try:
+        txid = os.getpid() & 0xFFFF
+        header = struct.pack("!HHHHHH", txid, 0x0100, 1, 0, 0, 0)
+        qname = b"".join(bytes([len(p)]) + p.encode() for p in domain.split(".")) + b"\x00"
+        question = qname + struct.pack("!HH", 1, 1)
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.settimeout(timeout)
+        t0 = time.time()
+        sock.sendto(header + question, (dns_server, 53))
+        data, _ = sock.recvfrom(4096)
+        rtt = round((time.time() - t0) * 1000, 1)
+        sock.close()
+        if len(data) < 12:
+            return "fail", [], rtt, "DNS 响应过短"
+        # 跳过 question 解析 answer 的 A 记录
+        pos = 12
+        for _ in range(struct.unpack("!H", data[4:6])[0]):
+            while pos < len(data) and data[pos] != 0:
+                pos += 1 + data[pos]
+            pos += 5
+        answers = []
+        for _ in range(struct.unpack("!H", data[6:8])[0]):
+            if pos + 12 > len(data):
+                break
+            if data[pos] != 0xc0:
+                while pos < len(data) and data[pos] != 0:
+                    pos += 1 + data[pos]
+                pos += 1
+            else:
+                pos += 2
+            _typ, _cls, _ttl, rdlen = struct.unpack("!HHIH", data[pos:pos + 10])
+            pos += 10
+            if _typ == 1 and rdlen == 4 and pos + 4 <= len(data):
+                answers.append(socket.inet_ntoa(data[pos:pos + 4]))
+            pos += rdlen
+        if not answers:
+            return "fail", [], rtt, "无 A 记录响应"
+        if expected_ip:
+            if expected_ip in answers:
+                return "ok", answers, rtt, None
+            return "warn", answers, rtt, f"解析到 {answers[0]}，但预期 {expected_ip} — 疑似 DNS 被重定向"
+        return "ok", answers, rtt, None
+    except socket.timeout:
+        return "fail", [], None, f"{dns_server} 无响应（超时 {timeout}s）"
+    except OSError as e:
+        return "fail", [], None, f"查询失败: {e}"
+
+
+def _parse_dhcp_options(raw: bytes) -> dict:
+    """解析 DHCP options（从 magic cookie 后开始）→ {code: value}。"""
+    opts = {}
+    i = 0
+    while i < len(raw):
+        code = raw[i]
+        if code == 0:
+            i += 1
+            continue
+        if code == 255:
+            break
+        if i + 1 >= len(raw):
+            break
+        ln = raw[i + 1]
+        if i + 2 + ln > len(raw):
+            break
+        val = raw[i + 2:i + 2 + ln]
+        if code == 54 and ln == 4:
+            opts["server_id"] = socket.inet_ntoa(val)
+        elif code == 3:
+            opts["router"] = socket.inet_ntoa(val[:4])
+        elif code == 6:
+            opts["dns"] = " ".join(socket.inet_ntoa(val[j:j + 4])
+                                   for j in range(0, len(val), 4))
+        elif code == 1:
+            opts["subnet"] = socket.inet_ntoa(val[:4])
+        elif code == 51 and ln == 4:
+            opts["lease"] = struct.unpack("!I", val)[0]
+        elif code == 12:
+            opts["hostname"] = val.decode("utf-8", "replace")
+        i += 2 + ln
+    return opts
+
+
+def dhcp_probe(timeout: float = 6.0) -> tuple:
+    """DHCP Discover 广播 → 收集所有 Offer 响应者 → (servers, err)。
+
+    定位：私接路由器抢答 DHCP（>1 个服务器响应 = 有非法 DHCP）。
+    servers: [{ip, mac?, router, dns, subnet, lease, rtt}]
+    """
+    mac = _local_mac()
+    xid = (os.getpid() ^ int(time.time())) & 0xFFFFFFFF
+    # BOOTP header + magic cookie + options
+    bootp = struct.pack("!BBBBIHHHH", 1, 1, 6, 0, xid, 0, 0x8000, 0, 0) \
+        + bytes(4) + bytes(4) + bytes(4) + mac + bytes(10) \
+        + bytes(64) + bytes(128) + bytes([99, 130, 83, 99])
+    opts = bytes([53, 1, 1])                       # DHCP Discover
+    opts += bytes([55, 7, 1, 3, 6, 15, 51, 54, 119])   # 请求参数列表
+    opts += bytes([12, 7]) + b"NADT-PROBE"
+    opts += bytes([255])
+    pkt = bootp + opts
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+        sock.bind(("0.0.0.0", 68))
+    except OSError as e:
+        return [], f"无法绑定 UDP 68（系统 DHCP 客户端占用？）：{e}"
+    servers = []
+    try:
+        sock.settimeout(timeout)
+        t0 = time.time()
+        try:
+            sock.sendto(pkt, ("255.255.255.255", 67))
+        except PermissionError:
+            return [], "发送被拒绝 — 请以管理员身份运行"
+        while time.time() - t0 < timeout:
+            try:
+                data, addr = sock.recvfrom(4096)
+            except socket.timeout:
+                break
+            if len(data) < 240 or data[0] != 2:        # BOOTREPLY
+                continue
+            if struct.unpack("!I", data[4:8])[0] != xid:
+                continue
+            srv = {
+                "ip": socket.inet_ntoa(data[20:24]) or addr[0],
+                "yiaddr": socket.inet_ntoa(data[16:20]),
+                "rtt": round((time.time() - t0) * 1000, 1),
+            }
+            srv.update(_parse_dhcp_options(data[240:]))
+            servers.append(srv)
+    finally:
+        sock.close()
+    return servers, None
+
+
+def _arp_lookup(ip: str) -> str:
+    """arp -a 查 IP 的 MAC（隐藏窗口）。"""
+    try:
+        out = subprocess.run(["arp", "-a", ip], capture_output=True, text=True,
+                             encoding="gbk", errors="replace",
+                             timeout=5, creationflags=_NO_WINDOW).stdout or ""
+        m = re.search(r"([0-9a-f]{2}[:-][0-9a-f]{2}[:-][0-9a-f]{2}[:-][0-9a-f]{2}[:-][0-9a-f]{2}[:-][0-9a-f]{2})",
+                      out, re.I)
+        return m.group(1).replace("-", ":").lower() if m else ""
+    except Exception:
+        return ""
+
+
+def arp_probe(ip: str, repeat: int = 3, timeout: float = 2.0) -> tuple:
+    """ARP 探测：ping 触发 + arp 表多次采样 → (macs, status, err)。
+
+    多次探测到不同 MAC（同一 IP） = 疑似 ARP 欺骗/重复 IP。
+    status: ok(单一稳定 MAC) / warn(多个 MAC=冲突) / fail(无 MAC/不可达)
+    """
+    macs = []
+    err = None
+    for _ in range(repeat):
+        reach, _, _err = icmp_ping(ip, count=1, timeout=timeout)
+        if _err and "管理员" in _err:
+            return [], "fail", _err
+        time.sleep(0.25)
+        mac = _arp_lookup(ip)
+        if mac and mac not in macs:
+            macs.append(mac)
+    if not macs:
+        return [], "fail", f"{ip} 无 ARP 条目（不可达或不同网段）"
+    if len(macs) > 1:
+        return macs, "warn", f"同一 IP 出现 {len(macs)} 个不同 MAC — 疑似 ARP 欺骗/重复 IP"
+    return macs, "ok", None
+
+
+def vlan_probe(target: str, count: int = 4, timeout: float = 2.0) -> tuple:
+    """跨 VLAN 连通性探测（标准 ICMP）→ (reachable, rtts, err)。
+
+    定位：应隔离却通（缺跨 VLAN 控制）/ 应通却不通（路由/ACL 问题）。
+    """
+    return icmp_ping(target, count=count, timeout=timeout)
+
+
+class ActiveTestPanel(ttk.Frame):
+    """主动探测标签页 / Active test panel (V3.3) — 标准协议故障定位。"""
+
+    def __init__(self, master: tk.Widget) -> None:
+        super().__init__(master)
+        self.result_queue = queue.Queue()
+        self._build_ui()
+        self.after(100, self._poll_queue)
+
+    def destroy(self) -> None:
+        super().destroy()
+
+    def _build_ui(self):
+        main = ttk.Frame(self, padding=10)
+        main.pack(fill=tk.BOTH, expand=True)
+
+        tgt = ttk.LabelFrame(main, text="Probe Targets（带新机器到现场，通信正常时主动探测）", padding=8)
+        tgt.pack(fill=tk.X, pady=(0, 8))
+        ttk.Label(tgt, text="ARP 目标 IP（网关/冲突IP）:").grid(row=0, column=0, sticky=tk.W)
+        self.at_arp_ip = tk.StringVar(value="")
+        ttk.Entry(tgt, textvariable=self.at_arp_ip, width=16).grid(row=0, column=1, padx=4)
+        ttk.Label(tgt, text="DNS 服务器 IP:").grid(row=0, column=2, sticky=tk.W, padx=(12, 0))
+        self.at_dns = tk.StringVar(value="")
+        ttk.Entry(tgt, textvariable=self.at_dns, width=16).grid(row=0, column=3, padx=4)
+        ttk.Label(tgt, text="预期解析 IP（对比重定向）:").grid(row=0, column=4, sticky=tk.W, padx=(12, 0))
+        self.at_dns_expected = tk.StringVar(value="")
+        ttk.Entry(tgt, textvariable=self.at_dns_expected, width=15).grid(row=0, column=5, padx=4)
+        ttk.Label(tgt, text="跨 VLAN 目标 IP:").grid(row=1, column=0, sticky=tk.W, pady=(6, 0))
+        self.at_vlan_ip = tk.StringVar(value="")
+        ttk.Entry(tgt, textvariable=self.at_vlan_ip, width=16).grid(row=1, column=1, padx=4, pady=(6, 0))
+        ttk.Label(tgt, text="查询域名:").grid(row=1, column=2, sticky=tk.W, padx=(12, 0), pady=(6, 0))
+        self.at_domain = tk.StringVar(value="www.baidu.com")
+        ttk.Entry(tgt, textvariable=self.at_domain, width=16).grid(row=1, column=3, padx=4, pady=(6, 0))
+
+        btns = ttk.Frame(main)
+        btns.pack(fill=tk.X, pady=(0, 8))
+        ttk.Button(btns, text="🕮 Probe DHCP（发现私接路由器抢答）", style="GreenAccent.TButton",
+                   command=lambda: self._run("dhcp")).pack(side=tk.LEFT, padx=(0, 6))
+        ttk.Button(btns, text="Probe DNS（重定向对比）", command=lambda: self._run("dns")).pack(side=tk.LEFT, padx=(0, 6))
+        ttk.Button(btns, text="Probe ARP（冲突/欺骗）", command=lambda: self._run("arp")).pack(side=tk.LEFT, padx=(0, 6))
+        ttk.Button(btns, text="Probe VLAN（跨 VLAN 连通）", command=lambda: self._run("vlan")).pack(side=tk.LEFT, padx=(0, 6))
+        self.at_status = ttk.Label(btns, text="", foreground="#2563eb")
+        self.at_status.pack(side=tk.LEFT, padx=(12, 0))
+
+        self.at_output = scrolledtext.ScrolledText(main, height=24, font=("Consolas", 9),
+                                                   state=tk.DISABLED, bg="#fbfdfb")
+        self.at_output.pack(fill=tk.BOTH, expand=True)
+        for tag, fg, bg in (("ok", "#15803d", "#dcfce7"), ("warn", "#b45309", "#fef3c7"),
+                            ("fail", "#b91c1c", "#fee2e2"), ("na", "#475569", "#f1f5f9"),
+                            ("title", "#1e3a8a", "#e0e7ff"), ("plain", "#1f2937", "#f8fafc")):
+            self.at_output.tag_configure(tag, foreground=fg, background=bg)
+
+    def _log(self, text, tag=None):
+        self.at_output.config(state=tk.NORMAL)
+        self.at_output.insert(tk.END, text + "\n", tag)
+        self.at_output.see(tk.END)
+        self.at_output.config(state=tk.DISABLED)
+
+    def _run(self, kind: str):
+        # 主线程取好参数（worker 线程不能碰 tkinter 变量）
+        args = {
+            "dns": self.at_dns.get().strip(),
+            "domain": self.at_domain.get().strip(),
+            "expected": self.at_dns_expected.get().strip(),
+            "arp_ip": self.at_arp_ip.get().strip(),
+            "vlan_ip": self.at_vlan_ip.get().strip(),
+        }
+        self.at_output.config(state=tk.NORMAL)
+        self.at_output.delete("1.0", tk.END)
+        self.at_output.config(state=tk.DISABLED)
+        self.at_status.config(text=f"Probing {kind}...")
+        threading.Thread(target=self._worker, args=(kind, args), daemon=True).start()
+
+    def _worker(self, kind: str, args: dict):
+        try:
+            if kind == "dhcp":
+                self._probe_dhcp()
+            elif kind == "dns":
+                self._probe_dns(args)
+            elif kind == "arp":
+                self._probe_arp(args)
+            elif kind == "vlan":
+                self._probe_vlan(args)
+        except Exception as e:
+            self.result_queue.put(("line", f"✗ 探测异常: {e}", "fail"))
+        finally:
+            self.result_queue.put(("done", None))
+
+    def _probe_dhcp(self):
+        self.result_queue.put(("line", "== DHCP 主动探测：广播 Discover，收集所有 Offer 响应者 ==", "title"))
+        servers, err = dhcp_probe(timeout=6)
+        if err:
+            self.result_queue.put(("line", f"✗ {err}", "fail"))
+            return
+        if not servers:
+            self.result_queue.put(("line", "➖ 6s 内无 DHCP Offer 响应（本网段可能没有 DHCP 服务器）", "na"))
+            return
+        for s in servers:
+            self.result_queue.put(("line", f"  📡 服务器 {s.get('ip')}  分配 {s.get('yiaddr')}  响应 {s.get('rtt')}ms", "plain"))
+            if s.get("router"):
+                self.result_queue.put(("line", f"     网关={s.get('router')}  掩码={s.get('subnet', '-')}  DNS={s.get('dns', '-')}  租约={s.get('lease', '-')}s", "plain"))
+        if len(servers) > 1:
+            self.result_queue.put(("line", f"❌ 检测到 {len(servers)} 个 DHCP 服务器响应 — 存在私接路由器/非法 DHCP 抢答！", "fail"))
+            self.result_queue.put(("line", "   终端获取到错误地址/间歇断网的根因大概率在此。排查：交换机开启 DHCP Snooping 并设合法上联口为 trusted。", "advice"))
+        else:
+            self.result_queue.put(("line", "✅ 仅 1 个 DHCP 服务器响应，无抢答", "ok"))
+
+    def _probe_dns(self, args: dict):
+        dns = args.get("dns", "")
+        if not dns:
+            self.result_queue.put(("line", "✗ 请填 DNS 服务器 IP", "fail"))
+            return
+        domain = args.get("domain") or "www.baidu.com"
+        expected = args.get("expected", "")
+        self.result_queue.put(("line", f"== DNS 主动探测：查询 {domain} @ {dns}（预期 {'未填' if not expected else expected}）==", "title"))
+        status, answers, rtt, err = dns_probe(dns, domain, expected)
+        if err:
+            self.result_queue.put(("line", f"✗ {err}", "fail"))
+            return
+        self.result_queue.put(("line", f"  解析结果: {', '.join(answers)}  ({rtt}ms)", "plain"))
+        if status == "ok":
+            self.result_queue.put(("line", "✅ DNS 响应正常，与预期一致", "ok"))
+        elif status == "warn":
+            self.result_queue.put(("line", f"⚠️ 解析到 {answers[0]} 但预期 {expected} — 疑似 DNS 被重定向（私接路由器/劫持）！", "warn"))
+            self.result_queue.put(("line", "   建议：核对 DHCP 下发的 DNS、检查出口 DNS 策略", "plain"))
+
+    def _probe_arp(self, args: dict):
+        ip = args.get("arp_ip", "")
+        if not ip:
+            self.result_queue.put(("line", "✗ 请填 ARP 目标 IP（网关或疑似冲突的 IP）", "fail"))
+            return
+        self.result_queue.put(("line", f"== ARP 主动探测：{ip} 采样 3 次（ping 触发 + arp 表）==", "title"))
+        macs, status, err = arp_probe(ip, repeat=3)
+        if err:
+            self.result_queue.put(("line", f"✗ {err}", "fail"))
+            return
+        for i, m in enumerate(macs, 1):
+            self.result_queue.put(("line", f"  采样 {i}: {m}", "plain"))
+        if status == "ok":
+            self.result_queue.put(("line", f"✅ {ip} → {macs[0]}（稳定，无 ARP 冲突）", "ok"))
+        elif status == "warn":
+            self.result_queue.put(("line", f"⚠️ 同一 IP 出现 {len(macs)} 个不同 MAC — 疑似 ARP 欺骗/重复 IP！", "warn"))
+            self.result_queue.put(("line", "   排查：display arp 查该 IP 真实归属，DAI(arp anti-attack) 未开是主因", "plain"))
+
+    def _probe_vlan(self, args: dict):
+        ip = args.get("vlan_ip", "")
+        if not ip:
+            self.result_queue.put(("line", "✗ 请填跨 VLAN 目标 IP", "fail"))
+            return
+        self.result_queue.put(("line", f"== 跨 VLAN 主动探测：ICMP ×4 → {ip} ==", "title"))
+        reach, rtts, err = vlan_probe(ip, count=4)
+        if err:
+            self.result_queue.put(("line", f"✗ {err}", "fail"))
+            return
+        if reach:
+            avg = sum(rtts) / len(rtts)
+            self.result_queue.put(("line", f"  RTT: {', '.join(map(str, rtts))}ms  平均 {avg:.1f}ms", "plain"))
+            self.result_queue.put(("line", f"✅ 跨 VLAN 可达 — 若这两个 VLAN 本应隔离，说明缺少跨 VLAN 访问控制！", "warn"))
+            self.result_queue.put(("line", "   排查：port-isolate / VLAN 间 ACL / 三层互访策略", "plain"))
+        else:
+            self.result_queue.put(("line", "➖ 4 次全部超时 — 不可达（若本应互通，查 VLANIF/路由/ACL）", "na"))
+
+    def _poll_queue(self):
+        try:
+            while True:
+                kind, *rest = self.result_queue.get_nowait()
+                if kind == "line":
+                    self._log(rest[0], rest[1] if len(rest) > 1 else None)
+                elif kind == "done":
+                    self.at_status.config(text="Done")
+        except queue.Empty:
+            pass
+        try:
+            self.after(100, self._poll_queue)
+        except Exception:
+            pass
+
+
 class TrafficTestPanel(ttk.Frame):
     """流量测试标签页 / Traffic stress-test panel (V3, green accents)."""
 
@@ -2299,6 +2718,7 @@ class NetworkInspectGUI:
         self.tab_profiles = ttk.Frame(notebook); notebook.add(self.tab_profiles, text="Profiles")
         self.tab_traffic  = TrafficTestPanel(notebook); notebook.add(self.tab_traffic, text="Traffic Test")
         self.tab_security = SecurityTestPanel(notebook, self); notebook.add(self.tab_security, text="Security Test")
+        self.tab_active   = ActiveTestPanel(notebook);        notebook.add(self.tab_active,   text="Active Test")
 
         self._build_single_tab()
         self._build_batch_tab()
