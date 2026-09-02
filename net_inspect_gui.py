@@ -2040,7 +2040,8 @@ def arp_probe(ip: str, repeat: int = 3, timeout: float = 2.0) -> tuple:
     """ARP 探测：ping 触发 + arp 表多次采样 → (macs, status, err)。
 
     多次探测到不同 MAC（同一 IP） = 疑似 ARP 欺骗/重复 IP。
-    status: ok(单一稳定 MAC) / warn(多个 MAC=冲突) / fail(无 MAC/不可达)
+    status: ok(单一稳定 MAC) / warn(多 MAC=欺骗 或 可达但跨网段无条目) /
+            fail(真不可达)
     """
     macs = []
     err = None
@@ -2052,11 +2053,19 @@ def arp_probe(ip: str, repeat: int = 3, timeout: float = 2.0) -> tuple:
         mac = _arp_lookup(ip)
         if mac and mac not in macs:
             macs.append(mac)
-    if not macs:
-        return [], "fail", f"{ip} 无 ARP 条目（不可达或不同网段）"
-    if len(macs) > 1:
-        return macs, "warn", f"同一 IP 出现 {len(macs)} 个不同 MAC — 疑似 ARP 欺骗/重复 IP"
-    return macs, "ok", None
+    if macs:
+        if len(macs) > 1:
+            return macs, "warn", f"同一 IP 出现 {len(macs)} 个不同 MAC — 疑似 ARP 欺骗/重复 IP"
+        return macs, "ok", None
+    # 无 MAC：区分 跨网段（可达但 ARP 无条目） 与 真不可达
+    reach, _, _err = icmp_ping(ip, count=2, timeout=timeout)
+    if reach:
+        return [], "warn", (
+            f"{ip} 可达（ping 通）但本机 ARP 无条目 — 目标跨网段，走网关路由，"
+            f"ARP 只能解析同网段设备。\n"
+            f"  要查该 IP 的真实 MAC/欺骗：在目标同网段的机器上探测；或先查网关 ARP "
+            f"确认路由是否正常")
+    return [], "fail", f"{ip} 不可达（ping 超时）且无 ARP 条目"
 
 
 def vlan_probe(target: str, count: int = 4, timeout: float = 2.0) -> tuple:
@@ -2200,7 +2209,7 @@ class ActiveTestPanel(ttk.Frame):
             return
         self.result_queue.put(("line", f"== ARP 主动探测：{ip} 采样 3 次（ping 触发 + arp 表）==", "title"))
         macs, status, err = arp_probe(ip, repeat=3)
-        if err:
+        if status == "fail":
             self.result_queue.put(("line", f"✗ {err}", "fail"))
             return
         for i, m in enumerate(macs, 1):
@@ -2208,8 +2217,13 @@ class ActiveTestPanel(ttk.Frame):
         if status == "ok":
             self.result_queue.put(("line", f"✅ {ip} → {macs[0]}（稳定，无 ARP 冲突）", "ok"))
         elif status == "warn":
-            self.result_queue.put(("line", f"⚠️ 同一 IP 出现 {len(macs)} 个不同 MAC — 疑似 ARP 欺骗/重复 IP！", "warn"))
-            self.result_queue.put(("line", "   排查：display arp 查该 IP 真实归属，DAI(arp anti-attack) 未开是主因", "plain"))
+            if "跨网段" in (err or ""):
+                self.result_queue.put(("line", f"⚠️ {err}", "warn"))
+            elif len(macs) > 1:
+                self.result_queue.put(("line", f"⚠️ 同一 IP 出现 {len(macs)} 个不同 MAC — 疑似 ARP 欺骗/重复 IP！", "warn"))
+                self.result_queue.put(("line", "   排查：display arp 查该 IP 真实归属，DAI(arp anti-attack) 未开是主因", "plain"))
+            else:
+                self.result_queue.put(("line", f"⚠️ {err}", "warn"))
 
     def _probe_vlan(self, args: dict):
         ip = args.get("vlan_ip", "")
