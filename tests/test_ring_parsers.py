@@ -337,10 +337,8 @@ def test_transceiver_diagnosis_values():
     assert out[0]["temp"] == pytest.approx(36.0)
 
 
-@pytest.mark.xfail(reason="已知缺陷：parse_huawei_temperature 取到的是槽位号而不是温度值",
-                   strict=False)
 def test_parse_huawei_temperature_reads_the_temperature_column():
-    """期望 45/52（温度列）。当前实现取 nums[0]（槽位号），见 bug 报告。"""
+    """温度必须取 Temperature(C) 列（早期取到槽位号 → D11 静默漏报，2026-09-17 已修）。"""
     out = RP.parse_huawei_temperature(fd.TEMPERATURE)
     assert [t["value"] for t in out] == [45.0, 52.0]
 
@@ -530,10 +528,8 @@ def test_load_rules_auto_releases_default_into_tmp(tmp_path):
     # ⚠ 注意：本次返回值里**没有 signals**（见 bug 报告第 2 条 / 下面的 xfail 用例）
 
 
-@pytest.mark.xfail(reason="已知缺陷：自动释放默认规则表后没有回读，本次返回的 rules 缺 signals",
-                   strict=False)
 def test_load_rules_auto_release_should_return_signals(tmp_path):
-    """期望：释放后本次调用即可用（signals 齐备）。当前实现返回的 dict 只有 thresholds。"""
+    """首次自动释放规则表后必须回读：本次调用就要带 signals（否则 D7 静默失效，2026-09-17 已修）。"""
     rules = RP.load_rules(str(tmp_path / "rules.yaml"))
     assert "signals" in rules and rules["signals"]
 
@@ -560,19 +556,30 @@ def test_load_rules_non_mapping_signals(tmp_path):
     assert any("signals" in w for w in rules["_warnings"]) and rules["signals"] == {}
 
 
-def test_rules_yaml_thresholds_are_nested_below_thresholds_key(tmp_path):
+def test_rules_yaml_thresholds_take_effect_in_engine(tmp_path):
     """
-    现象锁定（对应 bug 报告第 1 条）：`load_rules()` 把阈值放在 **thresholds 子键**下，
-    而 `ring_rules._th()` 只读**顶层键** → rules.yaml 里改阈值对引擎不生效。
+    rules.yaml 里改阈值必须**真的生效**。
+
+    回归点（2026-09-17 修复）：rules.yaml 用 `thresholds:` 嵌套写法，而引擎 `_th()` 只读顶层键
+    → 用户按文档改阈值（如广播风暴 100000）全部被静默忽略、一律回退内置默认值。
+    现在：顶层优先，其次读 `thresholds` 子键。
     """
     import ring_rules as RR
     p = tmp_path / "rules.yaml"
     p.write_text("thresholds:\n  broadcast_pps: 100000\n", encoding="utf-8")
     rules = RP.load_rules(str(p))
     assert rules["thresholds"]["broadcast_pps"] == 100000
-    assert "broadcast_pps" not in rules              # ← 顶层没有，引擎读不到
+
     s1 = fd.engine_sample(interfaces=[fd.iface(bcast=0)])
     s2 = fd.engine_sample(interfaces=[fd.iface(bcast=120000)], ts=60)
-    out = RR.rule_d4_broadcast_storm(s1, s2, rules=rules, interval_seconds=60)
-    assert len(out) == 1                             # 用户设的 100000 被忽略，仍按 1000 判
-    assert out[0]["threshold"] == 1000
+    # 2000 pps < 用户设的 100000 → 不告警（修复前会按内置 1000 误报）
+    assert RR.rule_d4_broadcast_storm(s1, s2, rules=rules, interval_seconds=60) == []
+    # 兼容：顶层写法与 thresholds 子键写法都生效
+    assert RR.rule_d4_broadcast_storm(s1, s2, rules={"broadcast_pps": 100000},
+                                      interval_seconds=60) == []
+    assert RR.rule_d4_broadcast_storm(s1, s2, rules={"thresholds": {"broadcast_pps": 100000}},
+                                      interval_seconds=60) == []
+    # 不给 rules（内置默认 1000）→ 报警
+    default_alerts = RR.rule_d4_broadcast_storm(s1, s2, interval_seconds=60)
+    assert len(default_alerts) == 1 and default_alerts[0]["threshold"] == 1000
+
