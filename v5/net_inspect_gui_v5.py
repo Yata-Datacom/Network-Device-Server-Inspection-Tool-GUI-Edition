@@ -13,12 +13,13 @@ Network Device / Server Inspection Tool — GUI Edition
   7. 简短巡检     Quick Inspect  — 仅执行 cpu/mem/alarm/device/stack 核心命令
   8. 运行状态栏   Status Column  — 批量巡检设备列表实时显示 Running/OK/FAILED
   9. 流量测试     Traffic Test  — 内置 UDP/TCP/TCP-SYN 压测 + TCP 接收端（V3 新增）
+  10. 环路告警     Ring Alert     — 环路特征 + 硬件健康告警（12 条判据，两轮差分 / 离线报告）
 
 依赖 Dependencies:
   pip install paramiko
   可选 Optional: pip install openpyxl  (Excel 导出 / Excel export)
 
-运行 Run: 双击"启动巡检工具.bat" 或 python net_inspect_gui.py
+运行 Run: 双击"启动巡检工具.bat" 或 python net_inspect_gui_v5.py
 """
 
 import tkinter as tk
@@ -4060,7 +4061,7 @@ class NetworkInspectGUI:
           - 所有 tk 变量的读取必须在主线程完成（工作线程只收发队列消息）。
         """
         self.root = root
-        self.root.title("Network Inspection System V3 — 网络巡检工具")
+        self.root.title(f"Network Inspection System V5 (v{__version__}) — 网络巡检工具")
         self.root.geometry("1120x860")
         self.root.minsize(800, 600)
 
