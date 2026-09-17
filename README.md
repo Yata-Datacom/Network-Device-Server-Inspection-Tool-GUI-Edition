@@ -6,7 +6,7 @@
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](pyproject.toml)
 [![Platform: Windows](https://img.shields.io/badge/platform-Windows-lightgrey.svg)](#)
 
-**v5.1.0** · [CHANGELOG](CHANGELOG.md) · [开发与测试](#开发与测试--development--tests)
+**v5.1.2** · [CHANGELOG](CHANGELOG.md) · [开发与测试](#开发与测试--development--tests)
 
 SSH-based automated inspection tool for network devices and servers — multi-vendor
 inspection, anomaly flagging, config backup, traffic test, security audit, active probes,
