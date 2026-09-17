@@ -28,3 +28,16 @@ app_icon_preview.png
 # V4（阉割/交接版）不进公开仓库：本地保留，不上传
 v4/
 net_inspect_gui_v2.py
+
+# 打包配置进仓库（CI build.yml 用）；其余 .spec 仍忽略
+!NetworkInspectionV3.spec
+!v5/NetworkInspectionV5.spec
+
+# 已废弃的独立分析器（功能已被 Ring Alert 页签取代），本地保留不入库
+ring_analyzer.py
+
+# 本地历史副本/压缩包（不进仓库）
+巡检工具迭代/
+机械工具巡检.zip
+机械工具巡检/
+.pytest_cache/

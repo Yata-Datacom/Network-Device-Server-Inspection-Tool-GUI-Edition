@@ -6,7 +6,6 @@ Linux 系统巡检工具
 import paramiko
 import getpass
 import sys
-import time
 
 
 # ============================================================

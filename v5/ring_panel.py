@@ -41,7 +41,6 @@ from tkinter.scrolledtext import ScrolledText
 
 import ring_analyze as RA
 import ring_parsers as RP
-import ring_rules as RR
 
 # ── 各厂商的"环路/健康"命令集（按《环路检测-规则清单》§1）────────────────
 # 说明：解析器目前只完整实现华为；其他厂商的命令可以先跑起来（结果会被记入
