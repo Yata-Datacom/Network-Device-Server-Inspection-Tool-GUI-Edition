@@ -86,6 +86,7 @@ class RingAlertPanel(ttk.Frame):
         self._last_export_dir: str | None = None
         self._rules = RP.load_rules()
         self._rules_meta = RA.available_rules()
+        self._run_warnings: list[str] = []      # 本轮的过程提示/失败记录（供结果弹窗诊断）
         self._build()
         self.after(150, self._poll)
 
@@ -318,16 +319,71 @@ class RingAlertPanel(ttk.Frame):
 
     def _ssh_run(self, host: str, user: str, pwd: str, devtype: str,
                  cmds: list[str], timeout: int = 20) -> dict:
-        """连一台设备把命令跑完，返回 `{命令: 输出}`。异常不回抛，记进 "_error"。"""
-        if self.app is not None and hasattr(self.app, "_ssh_connect"):
-            ssh = self.app._ssh_connect(host, user, pwd, timeout=timeout)
-        else:                                    # 内置兜底（独立运行时用）
-            import paramiko
-            ssh = paramiko.SSHClient()
-            ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-            ssh.connect(hostname=host, username=user, password=pwd,
+        """
+        连一台设备把命令跑完，返回 `{命令: 输出}`。
+
+        ⚠️ 宿主 GUI 的帮助函数签名（踩过坑，别凭印象调！）：
+          * `_create_ssh_client()` → 返回已配好 host key 策略的 paramiko 客户端；
+          * `_ssh_connect(client, host, port, user, pwd, timeout=10)` → **就地连接**，
+            返回 None（**不是**返回连接对象）—— 早期版本漏传 client、还把返回值当
+            连接用，导致每台设备都抛异常、两轮全是空数据（真实踩过）。
+          * `_run_commands_via_shell(client, devtype, {标题: 命令}, timeout=30)`
+            → 返回 `{标题: 输出}`；**关分页（DISABLE_PAGING）与老设备 ssh-rsa
+            降级都在它内部处理**，本函数不用再自己发关分页命令。
+
+        优先走宿主实现（与巡检工具行为一致：关分页 / 老设备算法降级 / 友好中文报错）；
+        `app=None` 时用内置兜底实现（独立运行与单测用）。
+        """
+        app = self.app
+        use_host = app is not None and all(
+            hasattr(app, n) for n in ("_create_ssh_client", "_ssh_connect", "_run_commands_via_shell"))
+        if use_host:
+            client = app._create_ssh_client()
+            try:
+                app._ssh_connect(client, host, 22, user, pwd, timeout=timeout)
+                title_map = {f"c{i}": c for i, c in enumerate(cmds)}
+                raw = app._run_commands_via_shell(client, devtype, title_map)
+                out: dict[str, str] = {}
+                for k, v in (raw or {}).items():
+                    if isinstance(k, str) and k.startswith("c") and k[1:].isdigit():
+                        i = int(k[1:])
+                        if i < len(cmds):
+                            out[cmds[i]] = v
+                return out
+            except Exception as e:
+                friendly = getattr(app, "_friendly_conn_error", None)
+                raise RuntimeError(friendly(e) if callable(friendly) else str(e)) from e
+            finally:
+                try:
+                    client.close()
+                except Exception:
+                    pass
+
+        # ── 内置兜底（无宿主时）────────────────────────────────
+        import paramiko
+        def _mk() -> "paramiko.SSHClient":
+            c = paramiko.SSHClient()
+            c.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+            return c
+        ssh = _mk()
+        try:
+            ssh.connect(hostname=host, port=22, username=user, password=pwd,
                         timeout=timeout, banner_timeout=timeout, auth_timeout=timeout,
                         look_for_keys=False, allow_agent=False)
+        except Exception as e1:
+            low = str(e1).lower()
+            if any(k in low for k in ("algorithm", "compatible", "agreement")):
+                try:
+                    ssh.close()
+                except Exception:
+                    pass
+                ssh = _mk()
+                ssh.connect(hostname=host, port=22, username=user, password=pwd,
+                            timeout=timeout, banner_timeout=timeout, auth_timeout=timeout,
+                            look_for_keys=False, allow_agent=False,
+                            disabled_algorithms={"keys": ("rsa-sha2-256", "rsa-sha2-512")})
+            else:
+                raise
         outs: dict[str, str] = {}
         try:
             disable_page = "screen-length 0 temporary" if devtype in ("huawei", "h3c") else (
@@ -335,12 +391,7 @@ class RingAlertPanel(ttk.Frame):
             for cmd in cmds:
                 if self._stop.is_set():
                     break
-                fn = getattr(self.app, "_run_commands_via_shell", None)
-                if callable(fn):
-                    outs[cmd] = fn(ssh, [cmd], disable_page=disable_page)[0] if disable_page \
-                        else fn(ssh, [cmd])[0]
-                else:
-                    outs[cmd] = self._exec_cmd(ssh, cmd, disable_page)
+                outs[cmd] = self._exec_cmd(ssh, cmd, disable_page)
         finally:
             try:
                 ssh.close()
@@ -404,6 +455,8 @@ class RingAlertPanel(ttk.Frame):
                     self._fail(m[1], m[2] if len(m) > 2 else "")
                 elif k in ("info", "warn"):
                     self.status_var.set(str(m[1]))
+                    if k == "warn":
+                        self._run_warnings.append(str(m[1]))   # 留档，结束后汇总给用户看
         except queue.Empty:
             pass
         self.after(150, self._poll)
@@ -460,6 +513,7 @@ class RingAlertPanel(ttk.Frame):
         self._stop.clear()
         self.result = None
         self._alerts = []
+        self._run_warnings = []
         self._render([])
         self._set_busy(True)
         self.summary_var.set("两轮采样中…")
@@ -570,6 +624,7 @@ class RingAlertPanel(ttk.Frame):
         self._stop.clear()
         self.result = None
         self._alerts = []
+        self._run_warnings = []
         self._render([])
         self._set_busy(True)
         self.summary_var.set("分析中…")
@@ -593,19 +648,50 @@ class RingAlertPanel(ttk.Frame):
         self._set_busy(False)
         self.prog.config(value=self.prog["maximum"])
         self._apply_filter()
-        s = (self.result or {}).get("summary", {})
-        mode = "两轮差分" if s.get("two_round") else "单轮快照"
+        res = self.result or {}
+        s = res.get("summary", {})
+        two = bool(s.get("two_round"))
+        mode = "两轮差分" if two else "单轮快照"
         self.summary_var.set(
             f"{mode} ｜ 设备 {s.get('devices', 0)} 台（{s.get('devices_with_alerts', 0)} 台有告警）"
             f" ｜ 高危 {s.get('high', 0)} / 一般 {s.get('medium', 0)} / 提示 {s.get('low', 0)}"
             f" ｜ 间隔 {s.get('interval_text', '—')}")
-        warns = (self.result or {}).get("warnings") or []
-        self.status_var.set(f"完成：共 {s.get('total', 0)} 条告警"
-                            + ("；提示：" + "；".join(warns) if warns else ""))
+
+        # 采样数据统计：让"到底跑了几轮、每轮拿到几台的数据"一眼可见
+        def _filled(sm):
+            s_ = sm or {}
+            n = sum(1 for v in s_.values()
+                    if (v.get("interfaces") or v.get("macs") or v.get("logs")))
+            return n, len(s_)
+        n1, m1 = _filled(res.get("samples1"))
+        n2, m2 = _filled(res.get("samples2")) if two else (0, 0)
+        warns = list(res.get("warnings") or []) + list(self._run_warnings)
+        tip = f"数据：第1轮 {n1}/{m1} 台有数据" + (f"；第2轮 {n2}/{m2} 台有数据" if two else "")
+        self.status_var.set(f"完成：共 {s.get('total', 0)} 条告警 ｜ {tip}"
+                            + (f" ｜ 过程提示 {len(warns)} 条" if warns else ""))
+
         if not s.get("total"):
-            messagebox.showinfo("结果", "未发现告警。\n\n单轮时看不出增长类问题"
-                                        "（MAC 漂移 / CRC 增长 / 广播速率），需要两轮对比。",
-                                parent=self)
+            if n1 == 0 or (two and n2 == 0):
+                which = "两轮都跑了，但" if two else ""
+                msg = (f"{which}**没有解析到任何数据** —— 说明设备没连上，或命令没返回内容。\n\n"
+                       f"{tip}\n\n")
+                msg += ("失败/提示记录（最多 8 条）：\n" + "\n".join(f"· {w}" for w in warns[:8])
+                        if warns else "（没有失败记录 —— 可能是设备返回了空内容，或命令全部不被该平台支持）")
+            elif two:
+                msg = (f"✅ 两轮差分完成，**未发现告警** —— 说明这两轮之间没有明显变化。\n\n"
+                       f"{tip}；间隔 {s.get('interval_text', '—')}\n\n"
+                       "（若你预期应该有异常，可以：把间隔拉长重跑 / 检查检测项是否勾选 / 看设备\n"
+                       "  的「检测能力提示」——某些命令该平台不支持）")
+            else:
+                msg = ("单轮快照未发现告警。\n\n增长类问题（MAC 漂移 / CRC 增长 / 广播速率 / "
+                       "链路震荡）**需要两份数据对比**：\n"
+                       "· 用「A. 在线两轮采样」设两轮间隔跑一次，或\n"
+                       "· 用「B. 离线分析」给两份不同时间的报告")
+            messagebox.showinfo("结果", msg, parent=self)
+        elif warns:
+            messagebox.showwarning("提示", f"本轮有 {len(warns)} 条过程提示/失败记录：\n\n"
+                                          + "\n".join(f"· {w}" for w in warns[:8]),
+                                   parent=self)
 
     def _fail(self, msg: str, tb: str) -> None:
         self._set_busy(False)

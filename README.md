@@ -219,9 +219,9 @@ Edit it and click **Reload rules** — no rebuild needed.
 ```
 # 格式: IP:用户名:密码:[类型]:"命令1,命令2,..."
 # 类型可选 (linux/cisco/huawei/h3c/ruijie)，默认 cisco；支持 # 注释行
-192.168.1.1:admin:yourpass:cisco:"show version,show ip int brief"
-192.168.1.2:root:yourpass:linux:"hostnamectl --static,uname -r"
-192.168.1.3:admin:yourpass:huawei:"display version,display ip int brief"
+192.0.2.1:admin:yourpass:cisco:"show version,show ip int brief"
+192.0.2.2:root:yourpass:linux:"hostnamectl --static,uname -r"
+192.0.2.3:admin:yourpass:huawei:"display version,display ip int brief"
 ```
 
 **`devices.xlsx`**（推荐，方便复制粘贴）——五列，第 1 行表头：
@@ -264,6 +264,18 @@ Edit it and click **Reload rules** — no rebuild needed.
 **Q: 报告/配置怎么找不到了？**
 程序把 `profiles.json` / `presets.json` / `backups/` / `reports/` 写在**程序（exe）同目录**——
 打包成单文件 exe 时，`__file__` 指向临时解包目录，早期版本曾因此落在 `%TEMP%\_MEIxxxx`（重启即丢），已修复。
+
+**Q: 环路告警「A. 在线两轮采样」跑完没告警，怎么区分"真没问题"和"根本没连上"？**
+看结果页的**状态栏**，它会写「数据：第1轮 x/y 台有数据；第2轮 x/y 台有数据」——
+两轮都跑到了、且都有数据，说明采样本身正常（没告警 = 两轮之间没有变化，是好事）。
+若某一轮是 `0 台有数据`，弹窗会直接列出失败原因（连接超时 / 认证失败 / 命令不被该平台支持）。
+单轮快照与两轮差分的提示文案是**分开**的，不会再出现"明明跑了两轮却说单轮"的误导。
+
+> 修复记录（2026-09-17）：早期版本调用巡检工具的 SSH 帮助函数时**漏传 `client` 参数**
+> （把"就地连接、返回 None"的 `_ssh_connect` 当成返回连接对象用），导致**每台设备都连接
+> 失败**、两轮均为空数据，并且无论几轮都提示"单轮时看不出…"。现改为：
+> `_create_ssh_client()` → `_ssh_connect(client, host, 22, user, pwd, timeout=…)` →
+> `_run_commands_via_shell(client, devtype, {标题: 命令})`（关分页与老设备算法降级由后者内部处理）。
 
 **Q: 如何修改异常阈值？**
 改 `net_inspect_gui.py` 里的 `ANOMALY_RULES`；环路告警的阈值改 `rules.yaml`（不用重打包）。
