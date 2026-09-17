@@ -331,15 +331,16 @@ def test_analyze_reports_empty_round1_warns(tmp_path):
     assert res["summary"]["total"] == 0
 
 
-def test_analyze_reports_missing_file_raises(tmp_path):
-    """现状行为：报告路径不存在时异常直接抛出（由调用方/GUI 兜）。"""
-    with pytest.raises(FileNotFoundError):
-        RA.analyze_reports(str(tmp_path / "not_there.csv"))
+def test_analyze_reports_missing_file_degrades_to_warnings(tmp_path):
+    """报告路径打错/文件被挪走 → 降级为 warnings，不再把 FileNotFoundError 抛给调用方。"""
+    res = RA.analyze_reports(str(tmp_path / "nope.csv"))
+    assert res["alerts"] == []
+    assert any("读取失败" in w or "解析出任何设备" in w for w in res["warnings"]), res["warnings"]
+    # 第二期缺失同样降级（且退回单轮模式）
+    res2 = RA.analyze_reports(str(tmp_path / "nope1.csv"), str(tmp_path / "nope2.csv"))
+    assert res2["alerts"] == []
+    assert res2["summary"]["two_round"] is False
 
-
-# ══════════════════════════════════════════════════════════════════
-# 导出
-# ══════════════════════════════════════════════════════════════════
 
 def _result_for_export():
     s1, s2 = two_round_samples()

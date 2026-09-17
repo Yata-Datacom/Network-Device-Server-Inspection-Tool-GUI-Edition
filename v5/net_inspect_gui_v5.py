@@ -44,7 +44,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import paramiko
 
-__version__ = "5.1.1"
+__version__ = "5.1.2"
 
 # ── 环路告警页签（可选模块：缺了工具照常跑）─────────────────────
 try:

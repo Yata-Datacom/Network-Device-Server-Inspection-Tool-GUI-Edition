@@ -277,14 +277,24 @@ def analyze_reports(round1_path: str,
                 pass
 
     tick("读取第一期报告…", 0, 1)
-    s1 = RP.parse_report(round1_path, device_class=device_class)
+    # 路径打错 / 文件被挪走也要降级成 warnings（与「解析不出设备」的处理风格一致，
+    # 不再把 FileNotFoundError 整个抛给调用方 —— GUI 只需展示提示，不必弹异常）
+    try:
+        s1 = RP.parse_report(round1_path, device_class=device_class)
+    except Exception as e:
+        warnings.append(f"第一期报告读取失败（{e}）：{round1_path}")
+        s1 = {}
     if not s1:
         warnings.append(f"第一期报告没有解析出任何设备：{round1_path}")
     s2 = None
     two_round = bool(round2_path)
     if two_round:
         tick("读取第二期报告…", 0, 1)
-        s2 = RP.parse_report(round2_path, device_class=device_class)
+        try:
+            s2 = RP.parse_report(round2_path, device_class=device_class)
+        except Exception as e:
+            warnings.append(f"第二期报告读取失败（{e}）：{round2_path}")
+            s2 = {}
         if not s2:
             warnings.append(f"第二期报告没有解析出任何设备：{round2_path}")
             two_round = False
