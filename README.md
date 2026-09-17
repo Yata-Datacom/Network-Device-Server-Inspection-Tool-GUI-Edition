@@ -1,5 +1,13 @@
 # Network Inspection Tool / 网络设备巡检工具
 
+[![CI](https://github.com/Yata-Datacom/Network-Device-Server-Inspection-Tool-GUI-Edition/actions/workflows/ci.yml/badge.svg)](https://github.com/Yata-Datacom/Network-Device-Server-Inspection-Tool-GUI-Edition/actions/workflows/ci.yml)
+[![Build EXE](https://github.com/Yata-Datacom/Network-Device-Server-Inspection-Tool-GUI-Edition/actions/workflows/build.yml/badge.svg)](https://github.com/Yata-Datacom/Network-Device-Server-Inspection-Tool-GUI-Edition/actions/workflows/build.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](pyproject.toml)
+[![Platform: Windows](https://img.shields.io/badge/platform-Windows-lightgrey.svg)](#)
+
+**v5.1.0** · [CHANGELOG](CHANGELOG.md) · [开发与测试](#开发与测试--development--tests)
+
 SSH-based automated inspection tool for network devices and servers — multi-vendor
 inspection, anomaly flagging, config backup, traffic test, security audit, active probes,
 and **ring/health alerting (loop detection, optical/temperature/power)**.
@@ -312,3 +320,29 @@ network_A/
 
 Personal/educational tool. Use only on devices you are authorized to access —
 all inspection commands are read-only queries, but **do confirm authorization before running**.
+
+---
+
+## 开发与测试 / Development & Tests
+
+```bash
+# 安装（含开发依赖：pytest / ruff / openpyxl / PyYAML）
+python -m pip install -e ".[dev]"
+
+# 跑测试（判据引擎 12 条规则、解析层、编排层两轮差分、v5 镜像一致性）
+python -m pytest -q
+
+# 静态检查
+ruff check .
+
+# 打包 exe（Windows；V5 需要在 v5/ 目录里执行）
+python -m PyInstaller --clean --noconfirm NetworkInspectionV3.spec
+cd v5 && python -m PyInstaller --clean --noconfirm NetworkInspectionV5.spec
+```
+
+- 装好后也可用命令入口启动：`net-inspect`
+- ⚠️ **依赖必须锁 `paramiko>=3.5,<4`**：老设备只支持 `ssh-rsa`，paramiko 4/5 已移除该实现
+- 环路告警的阈值/关键字改 `rules.yaml`（不用重打包）；检测逻辑在 `ring_rules.py`
+- CI：`.github/workflows/ci.yml`（Windows 跑 pytest、Linux 跑 ruff）；
+  `.github/workflows/build.yml`（打 tag 或手动触发 → V3/V5 两个 exe artifact）
+- 版本号在 `pyproject.toml` 与 `net_inspect_gui.__version__` **两处**，必须保持一致

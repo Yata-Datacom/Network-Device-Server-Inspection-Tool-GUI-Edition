@@ -1,0 +1,54 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "network-inspection-tool"
+version = "5.1.0"
+description = "SSH-based multi-vendor network device inspection GUI (Huawei/H3C/Ruijie/Cisco/Linux) with loop & hardware-health alerting"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Yata-Datacom" }]
+keywords = ["network", "inspection", "ssh", "paramiko", "huawei", "h3c", "ruijie", "cisco",
+            "stp", "loop-detection", "network-automation"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: System Administrators",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: Microsoft :: Windows",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Topic :: System :: Networking :: Monitoring",
+]
+dependencies = [
+  # 老设备（ME60 / 早期 S 系列等）只提供 ssh-rsa host key 与 sha1 kex：
+  # paramiko 4/5 已彻底移除 ssh-rsa 实现（加回算法偏好也无效），必须锁在 3.x
+  "paramiko>=3.5,<4",
+]
+
+[project.optional-dependencies]
+excel = ["openpyxl>=3.1"]        # 设备清单 xlsx
+yaml = ["PyYAML>=6"]             # rules.yaml（缺失时用内置默认规则表）
+dev = ["pytest>=8", "ruff>=0.6", "openpyxl>=3.1", "PyYAML>=6"]
+
+[project.scripts]
+net-inspect = "net_inspect_gui:main"
+
+[tool.setuptools]
+py-modules = ["net_inspect", "net_inspect_gui", "ring_rules", "ring_parsers",
+              "ring_analyze", "ring_panel"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q -p no:cacheprovider"   # 不在仓库里留 .pytest_cache
+
+[tool.ruff]
+line-length = 120
+extend-exclude = ["巡检工具迭代"]   # 本地历史副本，不是仓库内容
+target-version = "py311"
+
+[tool.ruff.lint]
+# 基线门禁：只拦「真错误」（语法错 / 未定义名 / 未使用变量），先能过，之后可按需收紧
+select = ["E9", "F"]

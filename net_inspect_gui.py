@@ -43,6 +43,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import paramiko
 
+__version__ = "5.1.0"
+
 # ── 老设备 SSH 兼容（2026-09-01 修复）──
 # paramiko 3.x 默认从偏好列表移除了 ssh-rsa（host key）和 group1/group14-sha1（kex），
 # 华为 VRP5 / H3C Comware V5 等老设备只提供 ssh-rsa host key + sha1 组 kex，
@@ -776,7 +778,6 @@ def ip_intel_lookup(ip: str) -> dict:
     import ipaddress as _ipa
     import json as _json
     import urllib.request as _ur
-    import urllib.error as _ue
     ip = (ip or "").strip()
     if not ip:
         return {"error": "IP 为空"}
@@ -2036,7 +2037,6 @@ def judge_security_item(devtype: str, item: str, outputs: dict) -> tuple:
       避免 enable 与 disabled 同时出现时误判为 ok。
     """
     joined = "\n".join(outputs.values())
-    low = joined.lower()
 
     if item == "dhcp_snooping":
         # 开启状态（全局）→ fail 条件优先（明确 Disabled）
@@ -2816,7 +2816,6 @@ def arp_probe(ip: str, repeat: int = 3, timeout: float = 2.0) -> tuple:
           - ping 不通 → "fail"，目标确实不可达。
     """
     macs = []
-    err = None
     for _ in range(repeat):
         reach, _, _err = icmp_ping(ip, count=1, timeout=timeout)
         if _err and "管理员" in _err:
@@ -3193,7 +3192,7 @@ class ActiveTestPanel(ttk.Frame):
         if reach:
             avg = sum(rtts) / len(rtts)
             self.result_queue.put(("line", f"  RTT: {', '.join(map(str, rtts))}ms  平均 {avg:.1f}ms", "plain"))
-            self.result_queue.put(("line", f"✅ 跨 VLAN 可达 — 若这两个 VLAN 本应隔离，说明缺少跨 VLAN 访问控制！", "warn"))
+            self.result_queue.put(("line", "✅ 跨 VLAN 可达 — 若这两个 VLAN 本应隔离，说明缺少跨 VLAN 访问控制！", "warn"))
             self.result_queue.put(("line", "   排查：port-isolate / VLAN 间 ACL / 三层互访策略", "plain"))
         else:
             self.result_queue.put(("line", "➖ 4 次全部超时 — 不可达（若本应互通，查 VLANIF/路由/ACL）", "na"))
@@ -5530,7 +5529,7 @@ class NetworkInspectGUI:
 
         # ── ping 预检 / reachability pre-check ──
         if precheck_enabled and not self._ping_host(host):
-            return (host, devtype, "UNREACHABLE", [(f"Ping", "Host unreachable")], [])
+            return (host, devtype, "UNREACHABLE", [("Ping", "Host unreachable")], [])
 
         # 简短巡检：用 QUICK_COMMANDS 覆盖设备文件命令 / quick mode override
         if quick_enabled:
@@ -5545,7 +5544,7 @@ class NetworkInspectGUI:
         try:
             self._ssh_connect(client, host, 22, user, pwd, timeout=10)
         except Exception as e:
-            return (host, devtype, "FAILED", [(f"Connection", self._friendly_conn_error(e))], [])
+            return (host, devtype, "FAILED", [("Connection", self._friendly_conn_error(e))], [])
 
         # 分支执行 / branch by device type
         if devtype in ("cisco", "huawei", "h3c", "ruijie"):
@@ -6730,7 +6729,12 @@ class NetworkInspectGUI:
 # 程序入口 / Entry Point
 # ═══════════════════════════════════════════════════════════════
 
-if __name__ == "__main__":
+def main() -> None:
+    """程序入口（pyproject 的 [project.scripts] 指向这里）。"""
     root = tk.Tk()
-    app = NetworkInspectGUI(root)
+    NetworkInspectGUI(root)
     root.mainloop()
+
+
+if __name__ == "__main__":
+    main()
