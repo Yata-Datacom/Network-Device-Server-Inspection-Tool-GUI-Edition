@@ -101,9 +101,21 @@ V5_RULES = [r["id"] for r in RULE_CATALOG]
 # 小工具
 # ══════════════════════════════════════════════════════════════════
 def _th(rules: Optional[Dict[str, Any]], key: str, default: Any) -> Any:
-    """从 rules 字典取阈值，缺失/类型不符时回退默认值 / fetch a threshold with fallback."""
+    """
+    从 rules 字典取阈值，缺失/类型不符时回退默认值 / fetch a threshold with fallback.
+
+    ⚠️ 支持两种写法（rules.yaml 用的是**嵌套**写法，load_rules() 也保持嵌套）：
+      * 顶层：`broadcast_pps: 1000`
+      * 嵌套：`thresholds: { broadcast_pps: 1000 }`   ← rules.yaml 实际格式
+    早期只读顶层 → 用户按文档改 `rules.yaml` 的阈值**完全不生效**（静默回退内置默认值）。
+    顶层优先（便于测试/覆盖），其次嵌套；都没有才回退 default。
+    """
     if isinstance(rules, dict):
         v = rules.get(key)
+        if v is None:
+            nested = rules.get("thresholds")
+            if isinstance(nested, dict):
+                v = nested.get(key)
         if v is not None:
             return v
     return default

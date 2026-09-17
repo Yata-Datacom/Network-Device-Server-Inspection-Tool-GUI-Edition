@@ -670,22 +670,57 @@ def parse_huawei_temperature(text: str) -> List[Dict[str, Any]]:
         Slot  Card  Sensor  Temperature(C)  Upper(C)  Lower(C)
         1     -     -       45              80        0
 
-    容错策略：只要一行里出现"看起来像温度"的数值（-20~120 之间）就收，
-    传感器名取该行第一个非数字字段，取不到就用 `Slot<N>`。
+    取值策略（按可靠性排序）：
+      1. 用**表头列起始字符位置**定位 Temperature(C) 列（固定宽度表格，最稳）；
+      2. 退化到**表头词序号**取第 N 个 token；
+      3. 都没有表头时才用启发式：行内第一个 -20~120 的数字。
+
+    ⚠️ 早期实现直接用「行内第一个 -20~120 的数字」——在槽位表里取到的是**槽位号**（1），
+    于是 D11 温度告警永远拿 1~N 度去比，真实过温（如 90 度）**静默漏报**。
 
     :return: `[{"sensor","value"}]`
     """
     out: List[Dict[str, Any]] = []
+    col_starts: List[int] = []          # 表头各列起始字符位置
+    t_idx: Optional[int] = None         # Temperature 列序号
+
     for line in _lines(text):
         if "temperature" in line.lower():
+            toks = list(re.finditer(r"\S+", line))
+            col_starts = [m.start() for m in toks]
+            for k, m in enumerate(toks):
+                if "temperature" in m.group(0).lower():
+                    t_idx = k
             continue
-        nums = [float(x) for x in re.findall(r"-?\d+(?:\.\d+)?", line)]
-        temps = [n for n in nums if -20 <= n <= 120 and "." not in repr(n)[:1]]
-        if not temps:
+        if not line.strip():
             continue
+
+        value: Optional[float] = None
+        if t_idx is not None:
+            if col_starts and t_idx < len(col_starts) and col_starts[t_idx] < len(line):
+                a = col_starts[t_idx]
+                b = col_starts[t_idx + 1] if t_idx + 1 < len(col_starts) else len(line)
+                m = re.search(r"-?\d+(?:\.\d+)?", line[a:b])
+                if m:
+                    value = float(m.group(0))
+            if value is None:
+                toks = line.split()
+                if t_idx < len(toks):
+                    m = re.search(r"-?\d+(?:\.\d+)?", toks[t_idx])
+                    if m:
+                        value = float(m.group(0))
+        if value is None:
+            nums = [float(x) for x in re.findall(r"-?\d+(?:\.\d+)?", line)]
+            temps = [n for n in nums if -20 <= n <= 120]
+            if not temps:
+                continue
+            value = temps[0]
+        if not (-50 <= value <= 150):
+            continue
+
         head = re.match(r"^(?P<slot>\d+)", line)
         sensor = f"Slot{head.group('slot')}" if head else (line.split()[0] if line.split() else "?")
-        out.append({"sensor": sensor, "value": temps[0]})
+        out.append({"sensor": sensor, "value": value})
     return out
 
 
@@ -1075,6 +1110,28 @@ def default_rules_path() -> str:
     return os.path.join(app_dir(), "rules.yaml")
 
 
+def _parse_rules_text(raw: str, warnings: List[str]) -> Dict[str, Any]:
+    """
+    解析规则表文本：优先 PyYAML，没装 yaml 时退化 JSON（同结构可直接改名 .json）。
+
+    解析失败只记警告不抛异常（返回空 dict，由调用方用内置默认值补齐）。
+    """
+    if not raw or not raw.strip():
+        return {}
+    try:
+        import yaml  # type: ignore
+        return yaml.safe_load(raw) or {}
+    except ImportError:
+        try:
+            import json
+            return json.loads(raw)
+        except Exception as e:
+            warnings.append(f"规则表解析失败(无 yaml 且非 JSON): {e}")
+    except Exception as e:
+        warnings.append(f"规则表 YAML 语法错误: {e}")
+    return {}
+
+
 def load_rules(path: Optional[str] = None, auto_release: bool = True) -> Dict[str, Any]:
     """
     读取规则表（rules.yaml），缺失时自动释放内置默认版。
@@ -1099,11 +1156,15 @@ def load_rules(path: Optional[str] = None, auto_release: bool = True) -> Dict[st
                 with open(path, "w", encoding="utf-8") as f:
                     f.write(_DEFAULT_RULES_YAML)
                 warnings.append(f"已释放默认规则表: {path}")
+                # ⚠️ 必须把刚写出的文件解析回来：否则本次调用只有 thresholds、没有 signals，
+                # 首次运行（新装 exe / rules.yaml 被删）时 D7 日志关键字会静默失效
+                data = _parse_rules_text(_DEFAULT_RULES_YAML, warnings)
             except Exception as e:
                 warnings.append(f"规则表释放失败({e})，改用内置默认值")
+                data: Dict[str, Any] = {}
         else:
             warnings.append(f"规则表不存在: {path}")
-        data: Dict[str, Any] = {}
+            data: Dict[str, Any] = {}
     else:
         raw = ""
         try:
@@ -1112,18 +1173,7 @@ def load_rules(path: Optional[str] = None, auto_release: bool = True) -> Dict[st
         except Exception as e:
             warnings.append(f"规则表读取失败({e})")
         data = {}
-        if raw.strip():
-            try:
-                import yaml  # type: ignore
-                data = yaml.safe_load(raw) or {}
-            except ImportError:
-                try:
-                    import json
-                    data = json.loads(raw)
-                except Exception as e:
-                    warnings.append(f"规则表解析失败(无 yaml 且非 JSON): {e}")
-            except Exception as e:
-                warnings.append(f"规则表 YAML 语法错误: {e}")
+        data = _parse_rules_text(raw, warnings)
     if not isinstance(data, dict):
         warnings.append("规则表顶层不是映射，已忽略")
         data = {}

@@ -43,7 +43,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import paramiko
 
-__version__ = "5.1.0"
+__version__ = "5.1.1"
 
 # ── 老设备 SSH 兼容（2026-09-01 修复）──
 # paramiko 3.x 默认从偏好列表移除了 ssh-rsa（host key）和 group1/group14-sha1（kex），
