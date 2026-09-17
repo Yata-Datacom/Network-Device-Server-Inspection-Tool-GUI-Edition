@@ -43,6 +43,13 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import paramiko
 
+# ── 环路告警页签（可选模块：缺了工具照常跑）─────────────────────
+try:
+    from ring_panel import RingAlertPanel
+except Exception:                      # noqa: BLE001
+    RingAlertPanel = None
+
+
 # ── 老设备 SSH 兼容（2026-09-01 修复）──
 # paramiko 3.x 默认从偏好列表移除了 ssh-rsa（host key）和 group1/group14-sha1（kex），
 # 华为 VRP5 / H3C Comware V5 等老设备只提供 ssh-rsa host key + sha1 组 kex，
@@ -4178,6 +4185,10 @@ class NetworkInspectGUI:
         self.tab_traffic  = TrafficTestPanel(notebook); notebook.add(self.tab_traffic, text="Traffic Test")
         self.tab_security = SecurityTestPanel(notebook, self); notebook.add(self.tab_security, text="Security Test")
         self.tab_active   = ActiveTestPanel(notebook);        notebook.add(self.tab_active,   text="Active Test")
+        # 环路 / 异常告警页签（V4/V5 新增）
+        if RingAlertPanel is not None:
+            self.tab_ring = RingAlertPanel(notebook, self)
+            notebook.add(self.tab_ring, text="Ring Alert")
 
         self._build_single_tab()
         self._build_batch_tab()

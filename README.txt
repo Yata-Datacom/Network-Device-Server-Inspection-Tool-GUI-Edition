@@ -7,7 +7,7 @@
   自动执行巡检命令，支持异常检测、配置备份、报告导出和连接信息管理。
 
   运行方式 / Run:
-    方法1: 双击 dist/Network巡检工具.exe       (独立exe，无需Python环境)
+    方法1: 双击 dist/巡检Network Inspection System V2 - For GCC.exe       (独立exe，无需Python环境)
     方法2: 双击 启动巡检工具.bat               (自动装依赖+启动)
     方法3: python net_inspect_gui.py          (命令行直接运行)
 
@@ -21,7 +21,7 @@
   文件                      说明
   ────────────────────────  ──────────────────────────────────────────────
   net_inspect_gui.py        主程序（图形界面），中英双语注释
-  dist/Network巡检工具.exe  独立可执行文件，双击即用，无需 Python
+  dist/巡检Network Inspection System V2 - For GCC.exe  独立可执行文件，双击即用，无需 Python
   启动巡检工具.bat           启动脚本（自动安装 paramiko，不弹黑窗）
   devices.txt               设备列表文件（批量巡检/备份时读取）
   profiles.json             保存的常用连接信息（通过 Profiles 页管理）
@@ -213,6 +213,6 @@
 
   Q: 如何重新打包 exe？
   A: pip install pyinstaller
-     pyinstaller --noconfirm Network巡检工具.spec
+     pyinstaller --noconfirm NetworkInspectionV2.spec
 
 ================================================================================
