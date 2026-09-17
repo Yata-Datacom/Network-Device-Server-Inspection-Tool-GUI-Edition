@@ -13,3 +13,18 @@ devices.txt
 *.swp
 *.swo
 *~
+devices.xlsm
+app_icon_preview.png
+# —— 2026-09-17：防止把敏感内容推到公开仓库 ——
+# 真实设备日志样本（含设备主机名/内网 IP）
+samples/
+# 构建虚拟环境（几百 MB）
+.venv-build/
+# 设备表含明文口令
+devices.xlsx
+devices.xlsm
+app_icon_preview.png
+
+# V4（阉割/交接版）不进公开仓库：本地保留，不上传
+v4/
+net_inspect_gui_v2.py

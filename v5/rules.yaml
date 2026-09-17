@@ -1,0 +1,151 @@
+# ══════════════════════════════════════════════════════════════════════════
+# rules.yaml —— 环路 / 异常告警 规则表
+# ══════════════════════════════════════════════════════════════════════════
+#
+# 这个文件是 **V4（阉割版）与 V5（完整版）唯一共享的东西**（纯数据，改一处两边生效）。
+# 检测逻辑各版本各自带（用户要求物理隔离）。
+#
+# 怎么用：
+#   1. 程序启动时自动读取本文件（放在 exe / .py 同目录）；
+#   2. 文件不存在会自动释放一份默认版；
+#   3. 改完保存即可生效（不用重新打包）。
+#
+# 改关键字时注意（踩过的坑）：
+#   * 关键字是 **正则**，大小写不敏感；
+#   * **别用裸词**！比如 `Alarm` 会命中日志里的 `alarmID=0x…`（实测 256 次误报），
+#     要写完整事件名，例如 `MSTP/4/PORT_STATE_DISCARDING`；
+#   * `.*` 是"全部厂商"通配键，其他键写厂商名（huawei / h3c / ruijie / cisco / linux）。
+#
+# 事件名从哪来：把巡检里的 `display logbuffer` 输出抓出来，
+# 用正则 `%%\d+([A-Za-z0-9_]+)/(\d)/([A-Za-z0-9_()\-]+)` 统计即可
+# （本文件里的华为事件名就是从 43 台真实设备、58 种事件里挑的）。
+# ══════════════════════════════════════════════════════════════════════════
+
+# ── 阈值（引擎侧缺省用内置值；这里写出来是为了方便你调）────────────────────
+thresholds:
+  # STP 拓扑变化：每分钟 TC 次数，按设备角色分档
+  tc_per_minute:      { access: 5, aggregation: 15, core: 30 }
+  # 广播/组播风暴：包速率（pps）与占带宽百分比
+  broadcast_pps:      1000
+  broadcast_bandwidth_pct: 5
+  # 接口错误：每分钟增量（warn 可疑 / high 高危）
+  crc_per_minute:     { warn: 100, high: 1000 }
+  # 链路震荡：每小时 up/down 次数
+  link_flap_per_hour: { warn: 3, high: 10 }
+  # MAC 漂移：两轮间同一 MAC 换口次数
+  mac_move_count:     { warn: 1, high: 2 }
+  # 光衰：收光功率绝对值（dBm，越负越弱）与两轮下降幅度
+  rx_power_dbm:       { warn: -20.0, high: -25.0 }
+  rx_power_drop_db:   3.0
+  # 温度：摄氏度
+  temp_c:             { warn: 65, high: 75 }
+  temp_rise_c:        10
+  # 电源/组件异常状态（大小写不敏感）
+  power_abnormal_states: [Abnormal, Fault, Absent, NotSupply, Unregistered, Failed]
+
+  # 单设备覆盖示例（不改全局，只针对某台机器放宽/收紧）：
+  #   device_overrides:
+  #     "192.0.2.1": { tc_per_minute: { core: 60 } }
+
+# ── 日志关键字 → 抽象信号映射 ──────────────────────────────────────────────
+# 这是把"各家五花八门的日志事件名"统一成几个判断信号的核心。
+signals:
+
+  # ① STP / MSTP 拓扑变化：二层抖动、环路的典型征兆
+  STP_TOPO_CHANGE:
+    severity: medium
+    patterns:
+      huawei:
+        - 'MSTP/4/PORT_STATE_(DISCARDING|FORWARDING|LEARNING)'
+        - 'MSTP/4/MSTPLOG_PROPORT_STATE'
+        - 'MSTP/4/SET_PORT_FORWARDING'
+        - 'MSTP/4/PROPORT_ROOT_PROTECTION'
+        - 'STP/4/'
+      h3c:   ['STP/4/', 'MSTP/4/']
+      ruijie: ['SPANTREE-']
+      cisco: ['SPANTREE-', 'STP-']
+      '.*':  ['topology change', 'TCN']
+
+  # ② MAC 漂移 / flapping：环路最直接的特征
+  MAC_FLAPPING:
+    severity: high
+    patterns:
+      huawei:
+        - 'MAC/4/MAC_MOVE'
+        - 'MAC/3/MAC_MOVE'
+        - 'MFLPVLAN'
+        - 'MAC.{0,20}(MOVE|FLAPPING|FLAP)'
+      h3c:   ['MAC_MOVE', 'MAC_MOVE_DETECT']
+      ruijie: ['MACFLAP', 'MAC_FLAPPING']
+      cisco: ['MACFLAP', 'MAC_MOVE_NOTIFICATION']
+      '.*':  ['MAC_MOVE', 'MACFLAPPING', 'MAC_FLAPPING']
+
+  # ③ 链路震荡：物理层不稳（常与环路/劣化伴生）
+  LINK_FLAP:
+    severity: medium
+    patterns:
+      huawei:
+        - 'IFPDT/4/IF_STATE'
+        - 'DEVM/2/hwPortDown'
+        - 'DEVM/4/hwPortUp'
+        - 'IFADP/4/PORTDOWNINFO'
+        - 'PHY/4/'
+      cisco: ['LINK-3-UPDOWN', 'LINEPROTO-5-UPDOWN']
+      '.*':  ['LINK_?(UP|DOWN)', 'PORT_?DOWN']
+      # 注意：华为 BRAS 的 `CMREG/4/LINK_STATE_CHANGED` 是**用户侧上下线**，
+      # 一天几百条属正常，故意不收进来（收了会天天误报）。
+
+  # ④ 环路检测（设备自带 loop-detect 功能的告警）
+  LOOP_DETECT:
+    severity: high
+    patterns:
+      huawei: ['LOOP_?DETECT', 'LOOPBACK_?DETECT', 'LDT/']
+      h3c:   ['LOOP_?DETECT']
+      ruijie: ['LOOP_?DETECT']
+      cisco: ['LOOP_?DETECT', 'LOOPBACK']
+      '.*':  ['loop.{0,12}detect']
+
+  # ⑤ 广播风暴 / 抑制触发
+  BROADCAST_STORM:
+    severity: high
+    patterns:
+      huawei:
+        - 'ARP/4/.{0,30}(SUPPRESS|EXCEED|THRESHOLD)'
+        - 'BROADCAST_?STORM'
+        - 'MFF/4/'
+      '.*':  ['broadcast.{0,12}storm', 'storm.{0,12}control', 'STORM_CONTROL']
+
+  # ⑥ 光模块 / 光功率异常
+  OPTICAL_DEGRADE:
+    severity: medium
+    patterns:
+      huawei: ['OPTICAL_?MODULE', 'RX_?POWER_?(LOW|HIGH|ALARM)', 'TRANSCEIVER_.{0,20}(FAIL|ALARM|ABSENT)']
+      '.*':  ['optical.{0,20}(alarm|fail|low)', 'rx.?power.{0,20}(low|alarm)']
+
+  # ⑦ 温度
+  TEMPERATURE:
+    severity: medium
+    patterns:
+      huawei: ['TEMP(ERATURE)?_?(HIGH|ALARM|OVER|ABNORMAL)', 'OVER_?TEMP']
+      '.*':  ['over.{0,6}temp', 'temperature.{0,20}(high|alarm)']
+
+  # ⑧ 电源 / 硬件组件
+  POWER:
+    severity: high
+    patterns:
+      huawei: ['POWER_?(FAIL|ABNORMAL|ABSENT)', 'PSU_', 'PWR_']
+      '.*':  ['power.{0,12}(fail|absent|abnormal)']
+
+  # ⑨ 端口安全 / 安全攻击（用户原有 V3 攻击检测的补充）
+  PORT_SECURITY:
+    severity: high
+    patterns:
+      huawei: ['SECURITY/3/', 'CPUDEFEND/3/', 'ARP_.{0,20}ATTACK', 'DHCP_.{0,20}SNOOPING.{0,20}(FAIL|ALARM)']
+      h3c:   ['SECURITY/3/']
+      cisco: ['PORT_SECURITY', 'DHCP_SNOOPING']
+
+  # ⑩ 用户/终端上线失败（BRAS 场景常见，低危但值得看一眼）
+  ONLINE_FAIL:
+    severity: low
+    patterns:
+      huawei: ['CMREG/3/ONLINE_FAIL', 'DHCPSNP_ONLINE_FAIL']
