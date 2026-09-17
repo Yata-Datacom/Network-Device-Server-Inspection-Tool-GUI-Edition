@@ -21,7 +21,7 @@ from PyInstaller.archive.readers import CArchiveReader, ZlibArchiveReader
 # (exe 路径, [必须存在的修复标记...], [必须消失的旧实现标记...])
 EXES = {
     "巡检V5": (r"C:\Users\yata\Documents\coding\network_A\v5\dist\巡检Network Inspection System V5 - For Yata.exe",
-              ["_parse_rules_text", "Temperature(C) 列", "顶层优先"],
+              ["_parse_rules_text", "Temperature(C) 列", "顶层优先", "第一期报告读取失败（"],
               ["若取到第一个数字：num"]),
     "巡检V4": (r"C:\Users\yata\Documents\coding\network_A\v4\dist\巡检Network Inspection System V4 - For GCC.exe",
               ["_parse_rules_text", "Temperature(C) 列"],
