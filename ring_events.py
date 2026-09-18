@@ -240,7 +240,6 @@ def build_faults(alerts: Sequence[Dict[str, Any]],
         ports = _uniq([p for a in items for p in (a.get("ports") or ([a.get("interface")] if a.get("interface") else []))])
         devices = _uniq([a.get("device") for a in items])
         if kind in ("mild", "storm_single"):
-            devs = _uniq([a.get("device") for a in items])
             info = dict(KIND_INFO["storm_single"])
             items_txt = "、".join(f"{a.get('device')}:{a.get('interface')}" for a in items[:8])
             extra_mild = [f"共 {len(items)} 处轻微超标（多为终端/摄像头发广播，非环路）：{items_txt}"
@@ -275,7 +274,6 @@ def build_faults(alerts: Sequence[Dict[str, Any]],
 
         steps = list(info["steps"])
         if ports and kind in ("loop", "storm", "loop_cross"):
-            first = ports[0]
             second = ports[1] if len(ports) > 1 else ports[0]
             steps[0] = f"先拔掉 **{second}** 的网线，等 1 分钟看广播量有没有降下来"
             if len(ports) > 2:
