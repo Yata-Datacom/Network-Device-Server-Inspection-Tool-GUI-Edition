@@ -40,6 +40,11 @@ from tkinter import filedialog, messagebox, ttk
 from tkinter.scrolledtext import ScrolledText
 
 import ring_analyze as RA
+
+try:
+    import ring_events as RE      # 故障事件层（人话故障卡）
+except Exception:
+    RE = None
 import ring_parsers as RP
 
 # ── 各厂商的"环路/健康"命令集（按《环路检测-规则清单》§1）────────────────
@@ -85,7 +90,8 @@ class RingAlertPanel(ttk.Frame):
         self._last_export_dir: str | None = None
         self._rules = RP.load_rules()
         self._rules_meta = RA.available_rules()
-        self._run_warnings: list[str] = []      # 本轮的过程提示/失败记录（供结果弹窗诊断）
+        self._run_warnings: list[str] = []
+        self._health: dict = {}      # 本轮的过程提示/失败记录（供结果弹窗诊断）
         self._build()
         self.after(150, self._poll)
 
@@ -185,6 +191,12 @@ class RingAlertPanel(ttk.Frame):
                   font=("Microsoft YaHei UI", 9, "bold")).pack(side=tk.LEFT)
         ttk.Button(fb, text="⚠ 上一异常", width=11, command=lambda: self._jump(-1)).pack(side=tk.RIGHT, padx=(4, 0))
         ttk.Button(fb, text="⚠ 下一异常", width=11, command=lambda: self._jump(1)).pack(side=tk.RIGHT, padx=(4, 0))
+        self.view_mode = tk.StringVar(value="fault")
+        ttk.Label(fb, text="视图：").pack(side=tk.LEFT, padx=(12, 2))
+        ttk.Radiobutton(fb, text="故障视图", value="fault", variable=self.view_mode,
+                        command=self._switch_view).pack(side=tk.LEFT)
+        ttk.Radiobutton(fb, text="告警明细", value="table", variable=self.view_mode,
+                        command=self._switch_view).pack(side=tk.LEFT, padx=(4, 0))
         ttk.Label(fb, text="级别：").pack(side=tk.LEFT, padx=(14, 2))
         self.fsev = tk.StringVar(value="全部")
         cb = ttk.Combobox(fb, textvariable=self.fsev, width=7, state="readonly",
@@ -210,11 +222,22 @@ class RingAlertPanel(ttk.Frame):
         self.tree.configure(yscrollcommand=vs.set)
         self.tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         vs.pack(side=tk.RIGHT, fill=tk.Y)
+        self.vs = vs                                   # 视图切换时要一起收起
+        # ── 故障视图（默认）：给不会数通的人看的"故障卡" ──
+        self.fault_text = ScrolledText(res, height=12, wrap=tk.WORD,
+                                       font=("Microsoft YaHei UI", 10))
+        self.fault_text.tag_configure("fh", foreground="#b91c1c", font=("Microsoft YaHei UI", 11, "bold"))
+        self.fault_text.tag_configure("fm", foreground="#b45309", font=("Microsoft YaHei UI", 11, "bold"))
+        self.fault_text.tag_configure("fl", foreground="#8a6d00", font=("Microsoft YaHei UI", 10, "bold"))
+        self.fault_text.tag_configure("fsec", foreground="#1f4e79", font=("Microsoft YaHei UI", 10, "bold"))
+        self.fault_text.tag_configure("fstep", foreground="#111827")
+        self.fault_text.tag_configure("fplain", foreground="#374151")
         self.tree.tag_configure("ring_high", foreground="#b91c1c", background="#ffebee")
         self.tree.tag_configure("ring_med", foreground="#b45309", background="#fff7ed")
         self.tree.tag_configure("ring_low", foreground="#8a6d00", background="#fffdf0")
         self.tree.bind("<Double-1>", lambda _e: self._detail())
 
+        self._switch_view()                # 初始即进入"故障视图"（给不会数通的人看）
         # ── 进度 / 状态 ─────────────────────────────────────────
         bar = ttk.Frame(self)
         bar.pack(fill=tk.X, padx=10, pady=(0, 8))
@@ -316,8 +339,47 @@ class RingAlertPanel(ttk.Frame):
                 out.append((host, devtype, user, pwd))
         return out
 
+    def _note_health(self, host: str, outputs: dict) -> None:
+        """
+        采样体检 / sampling health check.
+
+        逐条命令记录：字节数、行数、是否含 Error/Unrecognized —— 这样用户能一眼分辨
+        「命令没拿到数据」和「拿到了但没发现环路」，不再互相猜。
+        结果会进 warnings（导出报告里也能看到），并在状态栏汇总。
+        """
+        try:
+            import re as _re
+            err_pat = _re.compile(r"error|unrecognized|too many parameters|invalid input|% ?bad", _re.I)
+            rec = self._health.setdefault(host, {})
+            for cmd, out in (outputs or {}).items():
+                txt = str(out or "")
+                rec[cmd] = {"bytes": len(txt), "lines": txt.count("\n") + 1,
+                            "empty": len(txt.strip()) == 0,
+                            "error": bool(err_pat.search(txt[:400]))}
+        except Exception:
+            pass
+
+    def _health_report(self) -> list:
+        """把体检结果压成几句可读提示（供状态栏与报告）。"""
+        bad, empty, total = [], [], 0
+        for host, cmds in (self._health or {}).items():
+            for cmd, st in (cmds or {}).items():
+                total += 1
+                if st.get("empty") or st.get("error"):
+                    (bad if st.get("error") else empty).append(f"{host}·{cmd}")
+        tips = []
+        if empty:
+            tips.append(f"⚠ {len(empty)} 条命令没有返回内容（设备可能不支持或该检测项不适用）："
+                        + "、".join(empty[:3]) + ("…" if len(empty) > 3 else ""))
+        if bad:
+            tips.append(f"⚠ {len(bad)} 条命令返回了报错（多为命令不支持）："
+                        + "、".join(bad[:3]) + ("…" if len(bad) > 3 else ""))
+        if total and not tips:
+            tips.append(f"✅ 采样体检通过：{total} 条命令都有正常返回")
+        return tips
+
     def _ssh_run(self, host: str, user: str, pwd: str, devtype: str,
-                 cmds: list[str], timeout: int = 20) -> dict:
+                 cmds: list[str], timeout: int = 20, big: bool = False) -> dict:
         """
         连一台设备把命令跑完，返回 `{命令: 输出}`。
 
@@ -341,14 +403,16 @@ class RingAlertPanel(ttk.Frame):
             try:
                 app._ssh_connect(client, host, 22, user, pwd, timeout=timeout)
                 title_map = {f"c{i}": c for i, c in enumerate(cmds)}
-                raw = app._run_commands_via_shell(client, devtype, title_map)
+                raw = app._run_commands_via_shell(
+                    client, devtype, title_map,
+                    timeout=(60 if big else 30), silence_rounds=(45 if big else 20))
                 out: dict[str, str] = {}
                 for k, v in (raw or {}).items():
                     if isinstance(k, str) and k.startswith("c") and k[1:].isdigit():
                         i = int(k[1:])
                         if i < len(cmds):
                             out[cmds[i]] = v
-                return out
+                self._note_health(host, out)
             except Exception as e:
                 friendly = getattr(app, "_friendly_conn_error", None)
                 raise RuntimeError(friendly(e) if callable(friendly) else str(e)) from e
@@ -648,6 +712,7 @@ class RingAlertPanel(ttk.Frame):
         self.prog.config(value=self.prog["maximum"])
         self._apply_filter()
         res = self.result or {}
+        self._render_faults(res.get("faults"))
         s = res.get("summary", {})
         two = bool(s.get("two_round"))
         mode = "两轮差分" if two else "单轮快照"
@@ -666,7 +731,9 @@ class RingAlertPanel(ttk.Frame):
         n2, m2 = _filled(res.get("samples2")) if two else (0, 0)
         warns = list(res.get("warnings") or []) + list(self._run_warnings)
         tip = f"数据：第1轮 {n1}/{m1} 台有数据" + (f"；第2轮 {n2}/{m2} 台有数据" if two else "")
-        self.status_var.set(f"完成：共 {s.get('total', 0)} 条告警 ｜ {tip}"
+        _nf = len(res.get("faults") or [])
+        self.status_var.set(f"完成：共 {s.get('total', 0)} 条告警 → {_nf} 个故障"
+                            f"（严重 {s.get('faults_high', 0)}） ｜ {tip}"
                             + (f" ｜ 过程提示 {len(warns)} 条" if warns else ""))
 
         if not s.get("total"):
@@ -710,6 +777,69 @@ class RingAlertPanel(ttk.Frame):
                 continue
             rows.append(a)
         self._render(rows)
+
+    # ── 双视图：故障卡（给人看）/ 告警明细（给技术看）─────────────────
+    def _switch_view(self) -> None:
+        """在「故障视图」与「告警明细」之间切换 / switch between fault cards and the raw alert table."""
+        if self.view_mode.get() == "fault":
+            self.tree.pack_forget()
+            self.vs.pack_forget()
+            self.fault_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        else:
+            self.fault_text.pack_forget()
+            self.tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+            self.vs.pack(side=tk.RIGHT, fill=tk.Y)
+
+    def _render_faults(self, faults: list[dict] | None) -> None:
+        """
+        把聚合后的**故障**渲染成"人话卡片" / render aggregated faults as plain-language cards.
+
+        默认展示故障卡：不懂网络的人只要照「怎么处理」的步骤做即可；技术细节切到「告警明细」。
+        """
+        if not hasattr(self, "fault_text"):
+            return
+        self.fault_text.configure(state=tk.NORMAL)
+        self.fault_text.delete("1.0", tk.END)
+        if RE is None:
+            self.fault_text.insert(tk.END, "（故障卡模块 ring_events.py 缺失，已降级为告警明细）")
+            self.fault_text.configure(state=tk.DISABLED)
+            return
+        faults = faults or []
+        header = f"🔎 故障总览：发现 {len(faults)} 个故障"
+        if faults:
+            header += (f"（严重 {sum(1 for f in faults if f['severity'] == 'high')}"
+                       f" / 一般 {sum(1 for f in faults if f['severity'] == 'medium')}"
+                       f" / 提示 {sum(1 for f in faults if f['severity'] == 'low')}）")
+        self.fault_text.insert(tk.END, header + "\n", "fsec")
+        self.fault_text.insert(tk.END, "=" * 64 + "\n", "fplain")
+        if not faults:
+            self.fault_text.insert(tk.END, "✅ 未发现故障级问题。\n", "fl")
+        for i, f in enumerate(faults, 1):
+            tag = {"high": "fh", "medium": "fm", "low": "fl"}.get(f.get("severity"), "fplain")
+            icon = {"high": "❗", "medium": "⚠️", "low": "ℹ️"}.get(f.get("severity"), "·")
+            title = f"{icon} 故障 {i}｜{f.get('title', '')}"
+            if f.get("first"):
+                title += "     ← 先处理这个"
+            self.fault_text.insert(tk.END, title + "\n", tag)
+            self.fault_text.insert(tk.END, "─" * 64 + "\n", "fplain")
+            conf = {"high": "高", "medium": "中", "low": "低"}.get(f.get("confidence"), "低")
+            self.fault_text.insert(tk.END, f"故障设备：{f.get('device', '—')}      置信度：{conf}"
+                                           f"      涉及告警：{len(f.get('alerts') or [])} 条\n", "fplain")
+            for sec, key in (("【现象】", "symptoms"), ("【判断】", "cause")):
+                self.fault_text.insert(tk.END, sec + "\n", "fsec")
+                val = f.get(key)
+                if isinstance(val, list):
+                    for v in val:
+                        self.fault_text.insert(tk.END, f"  · {v}\n", "fplain")
+                else:
+                    self.fault_text.insert(tk.END, f"  {val or '—'}\n", "fplain")
+            self.fault_text.insert(tk.END, "【怎么处理】\n", "fsec")
+            for st in (f.get("steps") or []):
+                self.fault_text.insert(tk.END, f"  {st.replace('**', '')}\n", "fstep")
+            self.fault_text.insert(tk.END, "\n")
+        self.fault_text.insert(tk.END, "术语小抄：MAC＝设备的网卡身份；端口＝插网线的口；VLAN＝网段。"
+                                       "技术上要看原始证据，请切到「告警明细」。\n", "fplain")
+        self.fault_text.configure(state=tk.DISABLED)
 
     def _render(self, rows: list[dict]) -> None:
         self._alerts = rows

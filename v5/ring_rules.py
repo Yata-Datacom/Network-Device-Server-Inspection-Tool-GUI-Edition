@@ -74,6 +74,10 @@ DEFAULTS: Dict[str, Any] = {
     "temp_rise_c": 10,
     "power_abnormal_states": ["Abnormal", "Fault", "Absent", "NotSupply", "Unregistered"],
     "bpdu_in_per_second": 1000,
+    # D13：同一 MAC 出现在同一设备多少个非聚合端口才算冲突
+    "mac_multi_port": {"min_ports": 2},
+    # D4 分组容差：端口 pps 相差百分比以内算"同一环路环流"
+    "broadcast_group_tolerance_pct": 20,
 }
 
 # 规则编号 → (信号名, 说明)，供 UI 选项框展示
@@ -89,7 +93,8 @@ RULE_CATALOG: List[Dict[str, str]] = [
     {"id": "D9", "signal": "CROSS_DEVICE_CONFLICT", "name": "跨设备关联（MAC 全局冲突）",    "scope": "cross"},
     {"id": "D10", "signal": "OPTICAL_DEGRADE",    "name": "光模块收发功率（光衰）",           "scope": "single"},
     {"id": "D11", "signal": "TEMPERATURE",        "name": "温度告警",                        "scope": "single"},
-    {"id": "D12", "signal": "POWER",              "name": "电源状态告警",                    "scope": "single"},
+    {"id": "D12", "signal": "POWER",              "name": "电源状态告警",                       "scope": "single"},
+    {"id": "D13", "signal": "MAC_MULTI_PORT",     "name": "同设备 MAC 多端口冲突（环路直证）",  "scope": "single"},
 ]
 # V4（阉割版）启用范围：离线 + 基础项（不含 BPDU / 跨设备）
 V4_RULES = [r["id"] for r in RULE_CATALOG if r["id"] not in ("D8", "D9")]
@@ -141,6 +146,8 @@ def _alert(rule_id: str, signal: str, severity: str, confidence: str, device: st
         "evidence": evidence, "delta": delta, "threshold": threshold, "advice": advice,
     }
     a.update(extra)
+    if not a.get("fault_hint"):
+        a["fault_hint"] = FAULT_HINT.get(rule_id, "")
     return a
 
 
@@ -174,6 +181,98 @@ def _match_any(text: str, patterns: Sequence[str]) -> Optional[str]:
 # ══════════════════════════════════════════════════════════════════
 # D1 · MAC 漂移（同一 MAC 在两轮间换了端口）
 # ══════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════
+# 日志上下文抽取 / log context extraction（D7 升级用；事件层复用）
+# ══════════════════════════════════════════════════════════════════
+
+_RE_MAC = re.compile(r"([0-9a-fA-F]{4}[-:][0-9a-fA-F]{4}[-:][0-9a-fA-F]{4})")
+_RE_VLAN = re.compile(r"(?:VlanId|VLAN|Vlan|vlan)\s*[=:：]?\s*(\d{1,4})")
+_RE_PORT = re.compile(r"(?:Interface|interface|Port|port|PORT)\s*[=:：]\s*([A-Za-z][A-Za-z0-9\-]*\d[\w/\.:\-]*)")
+_RE_PORT2 = re.compile(r"\b((?:Eth-Trunk|XGE|10GE|40GE|100GE|GE|GigabitEthernet|MEth)\d[\w/\.:]*)")
+_RE_EVENT = re.compile(r"%%\d+([A-Za-z0-9_]+)/(\d+)/([A-Za-z0-9_()\-]+)")
+
+
+def extract_log_ctx(line: str) -> Dict[str, Any]:
+    """
+    从一行设备日志里抽出 MAC / VLAN / 端口 / 事件名。
+
+    为什么需要：设备日志里**本来就把环路与 MAC 漂移涉及的端口、VLAN 写清楚了**，
+    早期只当"关键字命中"处理，把这些信息丢掉了，非专业使用者就看不到"到底哪个口"。
+    华为真实例子::
+
+        Sep 17 2026 08:46:59 HOST %%01FEI/4/hwMflpVlanLoopPeriodicTrap(s):...VlanId=100
+        Sep 17 2026 09:01:27 HOST %%01MAC/4/MAC_MOVE(l)[1]:MAC f033-e508-0567 moved to port GE1/0/4
+
+    :return: ``{"mac","vlan","port","event"}``（取不到的字段为 None）。
+    """
+    s = str(line or "")
+    mac = _RE_MAC.search(s)
+    vlan = _RE_VLAN.search(s)
+    port = _RE_PORT.search(s) or _RE_PORT2.search(s)
+    ev = _RE_EVENT.search(s)
+    return {
+        "mac": (mac.group(1).lower() if mac else None),
+        "vlan": (int(vlan.group(1)) if vlan else None),
+        "port": (port.group(1) if port else None),
+        "event": (f"{ev.group(1)}/{ev.group(2)}/{ev.group(3)}" if ev else None),
+    }
+
+
+# 规则 → 故障类型（供事件聚合器归并；集中一处，规则本身不必各自声明）
+FAULT_HINT: Dict[str, str] = {
+    "D13": "loop", "D1": "loop", "D9": "loop",
+    "D4": "storm", "D7": "log",
+    "D5": "phy", "D6": "phy",
+    "D10": "hw", "D11": "hw", "D12": "hw",
+    "D2": "stp", "D3": "stp", "D8": "stp",
+}
+
+
+def rule_d13_mac_multi_port(sample: Dict[str, Any],
+                            rules: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+    """
+    D13 · 同设备 MAC 多端口冲突 / same-device multi-port MAC conflict.
+
+    判据（**单轮即可判定**）：同一 `MAC + VLAN` 在同一台设备的 **≥2 个非聚合端口**上同时出现。
+    含义：同一个终端的"身份"同时挂在两个口上 → 这两个口之间**被环接**了
+          （或两根线接到了同一台上游设备）。这是环路最直接、也最容易照着处理的证据。
+
+    排除：聚合口/堆叠口（`is_aggregate` / `is_stack_member`）天然多口同 MAC；三层设备
+          （BRAS 等，`l2_table_na`）没有二层表，直接跳过。
+
+    :return: 告警列表，每条带 `mac` / `vlan` / `ports`（端口列表，界面可直接点名两个口）。
+    """
+    out: List[Dict[str, Any]] = []
+    if sample.get("l2_table_na"):
+        return out
+    th = _th(rules, "mac_multi_port", DEFAULTS["mac_multi_port"])
+    need = int(th.get("min_ports", 2)) if isinstance(th, dict) else 2
+    by_mac: Dict[Any, List[str]] = {}
+    for m in (sample.get("macs") or []):
+        if m.get("is_aggregate") or m.get("is_stack_member"):
+            continue
+        port = str(m.get("port") or "").strip()
+        if not port:
+            continue
+        key = (m.get("mac"), m.get("vlan"))
+        by_mac.setdefault(key, [])
+        if port not in by_mac[key]:
+            by_mac[key].append(port)
+    for (mac, vlan), ports in by_mac.items():
+        if len(ports) < need:
+            continue
+        out.append(_alert(
+            "D13", "MAC_MULTI_PORT", "high", "high", sample.get("device", "?"),
+            evidence=(f"MAC {mac}（VLAN {vlan}）同时出现在 {len(ports)} 个端口：{'、'.join(ports)}"
+                      f" —— 这些端口之间疑似被环接"),
+            advice=("到该设备上依次拔掉这些端口的网线，观察广播量是否下降；"
+                    "若两端接在同一台上游设备/小交换机上，说明这两根线形成了环路"),
+            interface=ports[0], mac=mac, vlan=vlan, ports=ports, port_count=len(ports),
+        ))
+    return out
+
+
+
 def rule_d1_mac_flap(s1: Dict[str, Any], s2: Dict[str, Any],
                      rules: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
     """
@@ -209,7 +308,8 @@ def rule_d1_mac_flap(s1: Dict[str, Any], s2: Dict[str, Any],
             evidence=f"MAC {mac} (VLAN {vlan}) 端口由 {p1} 变为 {p2}",
             advice="确认该 MAC 是否为无线/漫游终端；若不是，检查两端口是否形成二层环路",
             interface=f"{p1} ↔ {p2}", delta=len(moves), threshold=warn_n,
-            mac=mac, vlan=vlan, port_before=p1, port_after=p2,
+            mac=mac, vlan=vlan, ports=[p1, p2], port_count=2,
+            port_before=p1, port_after=p2,
         ))
     return out
 
@@ -289,10 +389,18 @@ def rule_d4_broadcast_storm(s1: Dict[str, Any], s2: Dict[str, Any],
                             rules: Optional[Dict[str, Any]] = None,
                             interval_seconds: Optional[float] = None) -> List[Dict[str, Any]]:
     """
-    D4 · 广播/组播风暴 / Broadcast or multicast storm.
+    D4 · 广播/组播风暴 **并按"环路组"聚合** / broadcast storm, grouped into loop groups.
 
     判据：两轮间接口 broadcast(+multicast) 计数增量 ÷ 间隔 = pps；超阈值报警。
-    阈值：broadcast_pps（默认 1000 pps），可按设备分档覆盖。
+    分组：同一台设备上 **pps 相近（容差 broadcast_group_tolerance_pct，默认 ±20%）** 且同时越阈的
+          端口 → 合成 **一条** 告警（"环路组"）。物理含义：环路里的帧会在组内所有端口上
+          以几乎相同的速率循环 → 同速率的多个端口 = 同一个环。
+
+    为什么要聚合：真实环境一次环路会让十几二十个端口同时越阈，逐端口各报一条会得到上百条
+    散点告警，使用者看不出"这是一件事"。聚合后 1 个环路 = 1 条告警，且天然把
+    "单端口小广播（终端/摄像头，不是环路）"与"多端口同速率（环路）"区分开。
+
+    :return: 告警列表；组告警带 `ports`（端口列表）/`port_count`/`grouped=True`。
     """
     out: List[Dict[str, Any]] = []
     dt = interval_seconds or (s2.get("ts", 0) - s1.get("ts", 0)) or None
@@ -300,6 +408,7 @@ def rule_d4_broadcast_storm(s1: Dict[str, Any], s2: Dict[str, Any],
         return out
     i1 = {i.get("name"): i for i in (s1.get("interfaces") or [])}
     th = _f(_th(rules, "broadcast_pps", DEFAULTS["broadcast_pps"]), 1000)
+    hits: List[tuple] = []
     for i2 in (s2.get("interfaces") or []):
         name = i2.get("name")
         a = i1.get(name)
@@ -310,12 +419,44 @@ def rule_d4_broadcast_storm(s1: Dict[str, Any], s2: Dict[str, Any],
             continue
         pps = d / dt
         if pps > th:
-            sev = "high" if pps > th * 5 else "medium"
+            hits.append((name, pps))
+    if not hits:
+        return out
+    dev = s1.get("device", "?")
+    tol = _f(_th(rules, "broadcast_group_tolerance_pct", DEFAULTS["broadcast_group_tolerance_pct"]), 20.0) or 20.0
+    hits.sort(key=lambda x: -x[1])
+    groups: List[List[tuple]] = []
+    for name, pps in hits:
+        for g in groups:                                  # 与已有组的代表速率比较
+            base = g[0][1]
+            if base > 0 and abs(pps - base) / base * 100.0 <= tol:
+                g.append((name, pps))
+                break
+        else:
+            groups.append([(name, pps)])
+    for g in groups:
+        top_pps = g[0][1]
+        sev = "high" if top_pps > th * 5 else "medium"
+        if len(g) >= 2:
+            ports = [n for n, _ in g]
+            shown = "、".join(ports[:8]) + ("…" if len(ports) > 8 else "")
             out.append(_alert(
-                "D4", "BROADCAST_STORM", sev, "high", s1.get("device", "?"),
-                evidence=f"接口 {name} 广播+组播约 {pps:.0f} pps（增量 {int(d)} / {dt:.0f}s；阈值 {th:g} pps）",
-                advice="检查该端口下是否存在环路、或终端异常发广播；可临时启用风暴抑制定位",
-                interface=name, delta=round(pps, 1), threshold=th,
+                "D4", "BROADCAST_STORM", sev, "high", dev,
+                evidence=(f"{len(g)} 个端口广播+组播量相近（各约 {top_pps:.0f} pps，阈值 {th:g} pps）："
+                          f"{shown} —— 同速率的多个端口通常表示同一个环路在环流"),
+                advice=("这些端口属于同一个环路：按端口顺序**依次拔掉网线**，每拔一根观察广播量是否下降，"
+                        "降下来那根就是环路的接入点；确认后再顺着该线找对端"),
+                interface=ports[0], ports=ports, port_count=len(ports),
+                delta=round(top_pps, 1), threshold=th, grouped=True,
+            ))
+        else:
+            name, pps = g[0]
+            out.append(_alert(
+                "D4", "BROADCAST_STORM", sev, "medium", dev,
+                evidence=f"接口 {name} 广播+组播约 {pps:.0f} pps（阈值 {th:g} pps）",
+                advice=("单端口高广播：多半是终端/摄像头在猛发广播，**不是环路**；"
+                        "先观察，若持续增长再查该端口下面的设备"),
+                interface=name, delta=round(pps, 1), threshold=th, grouped=False,
             ))
     return out
 
@@ -439,10 +580,23 @@ def rule_d7_log_keywords(sample: Dict[str, Any],
         for line in logs:
             hit = _match_any(str(line), pats)
             if hit:
+                ctx = extract_log_ctx(line)
+                bits = []
+                if ctx["port"]:
+                    bits.append(f"端口 {ctx['port']}")
+                if ctx["vlan"] is not None:
+                    bits.append(f"VLAN {ctx['vlan']}")
+                if ctx["mac"]:
+                    bits.append(f"MAC {ctx['mac']}")
+                if ctx["event"]:
+                    bits.append(f"事件 {ctx['event']}")
+                tag = ("｜" + "｜".join(bits)) if bits else ""
                 out.append(_alert(
                     "D7", name, sev, "medium", sample.get("device", "?"),
-                    evidence=f"[{vendor}] 命中关键字 '{hit}'：{str(line)[:200]}",
-                    advice="按告警语义排查：MAC 漂移→查环路；拓扑变化→查链路抖动",
+                    evidence=f"[{vendor}] 命中 '{hit}'{tag}：{str(line)[:200]}",
+                    advice="按告警语义排查：MAC 漂移/环路→查两端线路；拓扑变化→查链路抖动",
+                    interface=(ctx["port"] or ""), mac=ctx["mac"], vlan=ctx["vlan"],
+                    event=ctx["event"], log_line=str(line)[:400],
                     delta=None, threshold=None, matched_keyword=hit,
                 ))
                 break       # 同一信号只报一次，避免刷屏
@@ -524,6 +678,7 @@ def rule_d9_cross_device(samples: Sequence[Dict[str, Any]],
                 evidence=f"MAC {mac} (VLAN {vlan}) 同时出现在多台设备：{detail}",
                 advice="这是二层环路的最强证据：核对这些端口之间的物理链路，检查是否环接",
                 delta=len(devs), threshold=1, mac=mac, vlan=vlan,
+                peer=detail, ports=[p for _, p in holders], port_count=len(holders),
             ))
     # 判据 B：同窗口多设备 TC 同时跳增（要求 ≥2 台）
     if samples and all(s.get("loop_pair") for s in samples if s.get("loop_pair") is not None):
@@ -724,6 +879,7 @@ _SINGLE_PAIR_RULES = {
     "D10": rule_d10_optical,
     "D11": lambda s1, s2, r, dt: rule_d11_temperature(s1, s2, r),
     "D12": lambda s1, s2, r, dt: rule_d12_power(s1, s2, r),
+    "D13": lambda s1, s2, r, dt: rule_d13_mac_multi_port(s2, r),
 }
 
 

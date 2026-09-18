@@ -45,6 +45,11 @@ from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence
 import ring_parsers as RP
 import ring_rules as RR
 
+try:
+    import ring_events as RE      # 故障事件层（把多条告警合成"一个故障"）
+except Exception:                 # 缺模块时降级：只出告警明细，不崩
+    RE = None
+
 # ══════════════════════════════════════════════════════════════════
 # 规则清单（给界面做勾选框；按"当前引擎里真的存在哪些规则"动态算）
 # ══════════════════════════════════════════════════════════════════
@@ -204,6 +209,17 @@ def analyze_samples(s1: Dict[str, Dict[str, Any]],
         warnings.append("当前为精简版：跨设备关联能力不可用，已跳过")
 
     alerts = RR.sort_alerts(alerts) if hasattr(RR, "sort_alerts") else alerts
+    # ── 故障事件层：把逐条告警聚合成"故障"（谁的问题 + 怎么处理）──
+    faults: List[Dict[str, Any]] = []
+    if RE is not None:
+        try:
+            _sm = dict(s1 or {})
+            if s2:
+                for _k, _v in (s2 or {}).items():
+                    _sm[_k] = _v
+            faults = RE.build_faults(alerts, _sm)
+        except Exception as exc:                 # 故障层异常不能影响告警明细
+            warnings.append(f"故障事件聚合异常：{exc}")
 
     # ── 统计 ──────────────────────────────────────────────────────
     sig_count: Dict[str, int] = {}
@@ -233,7 +249,11 @@ def analyze_samples(s1: Dict[str, Dict[str, Any]],
         "round1_path": (meta or {}).get("round1_path", "（在线采样）"),
         "round2_path": (meta or {}).get("round2_path", "（在线采样）") if two_round else "",
     }
-    return {"alerts": alerts, "by_device": by_device, "summary": summary,
+    summary["faults_total"] = len(faults)
+    summary["faults_high"] = sum(1 for f in faults if f.get("severity") == "high")
+    summary["faults_medium"] = sum(1 for f in faults if f.get("severity") == "medium")
+    summary["faults_low"] = sum(1 for f in faults if f.get("severity") == "low")
+    return {"alerts": alerts, "faults": faults, "by_device": by_device, "summary": summary,
             "unsupported": unsupported, "warnings": warnings,
             "samples1": s1, "samples2": s2}
 
@@ -347,6 +367,14 @@ def alerts_to_html(result: Dict[str, Any], path: str, tool_name: str = "环路/�
     """
     s = result["summary"]
     sev_color = {"high": "#d32f2f", "medium": "#e65100", "low": "#f9a825"}
+    # ── 故障清单（人话，放在技术明细之前；不懂网络的人看这一段就够）──
+    fault_html = ""
+    if RE is not None:
+        try:
+            fault_html = RE.faults_to_html(result.get("faults") or [])
+        except Exception:
+            fault_html = ""
+
     rows = []
     for a in result["alerts"]:
         c = sev_color.get(a.get("severity"), "#555")
@@ -394,6 +422,8 @@ def alerts_to_html(result: Dict[str, Any], path: str, tool_name: str = "环路/�
  <div class="card"><span class="k" style="color:#e65100">一般</span><b style="color:#e65100">{s['medium']}</b></div>
  <div class="card"><span class="k" style="color:#f9a825">提示</span><b style="color:#f9a825">{s['low']}</b></div>
 </div>
+{fault_html}
+
 <h2>告警明细（{s['total']} 条）</h2>
 <table><tr><th>级别</th><th>信号</th><th>设备</th><th>接口</th><th>证据（原始）</th><th>建议动作</th></tr>
 {''.join(rows) or '<tr><td colspan="6">未发现告警</td></tr>'}

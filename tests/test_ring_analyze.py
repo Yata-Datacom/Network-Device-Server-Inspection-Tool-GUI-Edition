@@ -22,7 +22,7 @@ import pytest
 import ring_analyze as RA
 import ring_parsers as RP
 
-ALL_RULES = [f"D{i}" for i in range(1, 13)]
+ALL_RULES = [f"D{i}" for i in range(1, 14)]   # D1~D13（v5.2 新增 D13 同设备 MAC 多端口）
 
 
 # ══════════════════════════════════════════════════════════════════
