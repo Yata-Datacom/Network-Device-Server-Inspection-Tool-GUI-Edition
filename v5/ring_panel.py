@@ -76,6 +76,40 @@ RING_COMMANDS = {
 SEV_TAG = {"high": "ring_high", "medium": "ring_med", "low": "ring_low"}
 
 
+# ══════════════════════════════════════════════════════════════════
+# 瞬时故障判定与友好提示（连接层重试用）
+# ══════════════════════════════════════════════════════════════════
+_TRANSIENT_HINTS = (
+    "unable to open channel", "channel closed", "connection reset", "connection aborted",
+    "broken pipe", "no existing session", "socket is closed", "server connection dropped",
+    "eof", "timed out", "timeout", "winerror 10053", "winerror 10054", "nonexisting session",
+)
+
+
+def _looks_transient(err: BaseException) -> bool:
+    """判断是否为“重试一次大概率就好”的瞬时故障（通道被拒/被掐/超时）。"""
+    s = f"{type(err).__name__}: {err}".lower()
+    return any(h in s for h in _TRANSIENT_HINTS)
+
+
+def _friendly_session_error(msg: str) -> str:
+    """把底层异常文本翻译成“知道下一步做什么”的中文提示。"""
+    low = (msg or "").lower()
+    if "unable to open channel" in low:
+        return ("设备拒绝新建会话通道（密码是对的，不是认证问题）—— 设备侧登录会话被占满。"
+                "常见原因：① 同时开了另一个巡检实例/工具在连同一台设备；② 上一轮连接还没释放；"
+                "③ 设备 VTY 上限（华为常见 10 个）被其他登录占用。"
+                "本工具已自动重试一次；仍失败请等 30 秒再跑，并确认只开了一个巡检工具。")
+    if "authentication" in low or "auth fail" in low:
+        return "认证失败：这台设备的用户名或密码不对（请核对该行账号密码）。"
+    if "timed out" in low or "timeout" in low:
+        return ("连接超时：设备没有及时响应（多半不是密码问题）。确认设备在线、SSH 已开启"
+                "（华为：stelnet server enable），或管理面繁忙/被限速。")
+    if "refused" in low:
+        return "端口被拒绝：目标 22 端口没开（华为需先 ssh server enable / stelnet server enable）。"
+    return msg
+
+
 class RingAlertPanel(ttk.Frame):
     """环路告警页签。构造参数 `app` 为宿主 GUI（可为 None，此时用内置兜底实现）。"""
 
@@ -113,7 +147,7 @@ class RingAlertPanel(ttk.Frame):
                   foreground="#8a97a5").grid(row=0, column=5, sticky="w")
 
         ttk.Label(on, text="两轮间隔(分钟)：").grid(row=1, column=0, sticky="e")
-        self.gap_var = tk.StringVar(value="30")
+        self.gap_var = tk.StringVar(value="1")
         ttk.Entry(on, textvariable=self.gap_var, width=8).grid(row=1, column=1, sticky="w")
         ttk.Label(on, text="并发设备数：").grid(row=1, column=2, sticky="e", padx=(12, 0))
         self.workers_var = tk.StringVar(value="8")
@@ -399,28 +433,39 @@ class RingAlertPanel(ttk.Frame):
         use_host = app is not None and all(
             hasattr(app, n) for n in ("_create_ssh_client", "_ssh_connect", "_run_commands_via_shell"))
         if use_host:
-            client = app._create_ssh_client()
-            try:
-                app._ssh_connect(client, host, 22, user, pwd, timeout=timeout)
-                title_map = {f"c{i}": c for i, c in enumerate(cmds)}
-                raw = app._run_commands_via_shell(
-                    client, devtype, title_map,
-                    timeout=(60 if big else 30), silence_rounds=(45 if big else 20))
-                out: dict[str, str] = {}
-                for k, v in (raw or {}).items():
-                    if isinstance(k, str) and k.startswith("c") and k[1:].isdigit():
-                        i = int(k[1:])
-                        if i < len(cmds):
-                            out[cmds[i]] = v
-                self._note_health(host, out)
-            except Exception as e:
-                friendly = getattr(app, "_friendly_conn_error", None)
-                raise RuntimeError(friendly(e) if callable(friendly) else str(e)) from e
-            finally:
+            import time as _tt
+            last_err = None
+            for attempt in (1, 2):                       # 瞬时故障（通道被拒/被掐/超时）自动重试一次
+                client = app._create_ssh_client()        # 每次都用全新连接，避免复用被污染的会话
                 try:
-                    client.close()
-                except Exception:
-                    pass
+                    app._ssh_connect(client, host, 22, user, pwd, timeout=timeout)
+                    title_map = {f"c{i}": c for i, c in enumerate(cmds)}
+                    raw = app._run_commands_via_shell(
+                        client, devtype, title_map,
+                        timeout=(60 if big else 30), silence_rounds=(45 if big else 20))
+                    out: dict[str, str] = {}
+                    for k, v in (raw or {}).items():
+                        if isinstance(k, str) and k.startswith("c") and k[1:].isdigit():
+                            i = int(k[1:])
+                            if i < len(cmds):
+                                out[cmds[i]] = v
+                    self._note_health(host, out)
+                    return out
+                except Exception as e:
+                    last_err = e
+                    retryable = _looks_transient(e)
+                    if attempt == 1 and retryable:
+                        _tt.sleep(2.5)               # 给设备 2.5 秒释放旧会话再试
+                        continue
+                    friendly = getattr(app, "_friendly_conn_error", None)
+                    msg = friendly(e) if callable(friendly) else str(e)
+                    raise RuntimeError(_friendly_session_error(str(msg))) from e
+                finally:
+                    try:
+                        client.close()
+                    except Exception:
+                        pass
+            raise RuntimeError(_friendly_session_error(str(last_err)))
 
         # ── 内置兜底（无宿主时）────────────────────────────────
         import paramiko
