@@ -44,7 +44,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import paramiko
 
-__version__ = "5.2.0"
+__version__ = "5.2.2"
 
 # ── 环路告警页签（可选模块：缺了工具照常跑）─────────────────────
 try:
@@ -3997,6 +3997,23 @@ class TrafficTestPanel(ttk.Frame):
 # 主 GUI 类 / Main GUI Class
 # ═══════════════════════════════════════════════════════════════
 
+_PROMPT_RE = re.compile(r"(?m)^[<\[]([^<\[\]\r\n]{1,80})[>\]]\s*$")
+
+
+def _extract_prompt(text: str) -> str:
+    """
+    从登录 banner 里认出设备的命令行提示符（形如 ``<SW-1>`` / ``[SW-1]``）。
+
+    用途：判断"一条命令的输出读完了"。老实现只能死等 3 秒静默（每条命令固定多花
+    3 秒，11 条命令就是 35 秒/台），慢得没法反复测试。有了提示符就能一看到就收工，
+    实测快 5~8 倍；认不出提示符时自动退回原来的静默判定，行为不变。
+    """
+    last = None
+    for m in _PROMPT_RE.finditer(text or ""):
+        last = m
+    return last.group(0).strip() if last else ""
+
+
 class NetworkInspectGUI:
     """
     网络巡检工具主窗口 / Main inspection tool window.
@@ -5982,10 +5999,18 @@ class NetworkInspectGUI:
           会在下一轮循环继续读，不会丢。
         """
         results = {}
+        channel = None
         try:
             channel = client.invoke_shell(width=200, height=100)
+            try:
+                channel.settimeout(2.0)                      # 读超时兜底：防个别情况下 recv 卡死线程
+            except Exception:
+                pass
             time.sleep(1.5)                                  # 等待设备就绪 / wait for device
-            if channel.recv_ready(): channel.recv(65535)     # 清空 banner / clear banner
+            banner = ""                                      # 清空 banner，并顺手记住设备提示符
+            if channel.recv_ready():
+                banner = channel.recv(65535).decode('utf-8', errors='replace')
+            prompt = _extract_prompt(banner)                 # 形如 "<SW-1>"；空串=认不出，退回静默判定
 
             # 先发送禁用分页命令 / send paging-disable first
             paging_cmd = DISABLE_PAGING.get(devtype)
@@ -6006,17 +6031,29 @@ class NetworkInspectGUI:
                     if channel.recv_ready():
                         output += channel.recv(65535).decode('utf-8', errors='replace')
                         no_data_count = 0
+                        # 设备提示符又出现了 → 这条命令的输出已经结束，立刻收工（不必再等静默）
+                        _tail = output.rstrip().splitlines()
+                        if prompt and _tail and prompt in _tail[-1]:
+                            break
                     else:
                         time.sleep(0.15)
                         no_data_count += 1
                         if output.strip() and no_data_count > int(silence_rounds):  # 默认 20×150ms≈3s；大表模式传更大值
                             break
                 results[title] = output.strip()
-            channel.close()
         except Exception as e:
             for title in cmds:
                 if title not in results:
                     results[title] = f"[ERROR] {e}"
+        finally:
+            # 无论成功/失败/被停止/异常，都必须释放通道 —— 否则设备的 VTY 会话会被
+            # 一直占着（实测过：异常路径漏关，会话挂了 3 小时不释放，后续再连就被
+            # 设备回 "Unable to open channel"）。
+            if channel is not None:
+                try:
+                    channel.close()
+                except Exception:
+                    pass
         return results
 
     def _send_paging_disable(self, client, devtype):
