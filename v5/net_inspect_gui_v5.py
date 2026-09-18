@@ -44,7 +44,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import paramiko
 
-__version__ = "5.1.2"
+__version__ = "5.2.0"
 
 # ── 环路告警页签（可选模块：缺了工具照常跑）─────────────────────
 try:
@@ -5941,7 +5941,8 @@ class NetworkInspectGUI:
                 if line.strip() and any(re.search(p,line,re.IGNORECASE) for p in patterns)]
         return "\n".join(kept) if kept else output  # 无匹配行时返回原输出 / no match → original
 
-    def _run_commands_via_shell(self, client, devtype, cmds, timeout=30):
+    def _run_commands_via_shell(self, client, devtype, cmds, timeout=30,
+                                 silence_rounds: int = 20):
         """
         通过 invoke_shell() 交互式 SSH 通道执行多条命令（Cisco/Huawei）。
 
@@ -6008,7 +6009,7 @@ class NetworkInspectGUI:
                     else:
                         time.sleep(0.15)
                         no_data_count += 1
-                        if output.strip() and no_data_count > 20:  # ≈3s 无数据→命令结束
+                        if output.strip() and no_data_count > int(silence_rounds):  # 默认 20×150ms≈3s；大表模式传更大值
                             break
                 results[title] = output.strip()
             channel.close()

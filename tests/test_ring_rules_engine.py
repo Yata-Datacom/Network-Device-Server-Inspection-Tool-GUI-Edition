@@ -699,9 +699,10 @@ def test_sort_alerts_orders_high_medium_low():
 
 
 def test_rule_catalog_and_v4_v5_sets():
-    assert [c["id"] for c in RR.RULE_CATALOG] == [f"D{i}" for i in range(1, 13)]
+    assert [c["id"] for c in RR.RULE_CATALOG] == [f"D{i}" for i in range(1, 14)]
     assert "D8" not in RR.V4_RULES and "D9" not in RR.V4_RULES
-    assert len(RR.V5_RULES) == 12
+    assert len(RR.V5_RULES) == 13
+    assert len(RR.V4_RULES) == 11          # V4 = V5 去掉 D8/D9
 
 
 def test_thresholds_fallback_when_rules_shape_is_wrong():
@@ -744,5 +745,6 @@ def test_helper_th_and_f_are_lenient():
 def test_helper_alert_payload_shape():
     a = RR._alert("D1", "SIG", "high", "low", "SW-1", "ev", "adv", extra_field=1)
     assert set(a) == {"rule_id", "signal", "severity", "confidence", "device",
-                      "interface", "evidence", "delta", "threshold", "advice", "extra_field"}
+                      "interface", "evidence", "delta", "threshold", "advice",
+                      "fault_hint", "extra_field"}      # fault_hint 由 _alert 自动补（供故障聚合）
     assert a["extra_field"] == 1

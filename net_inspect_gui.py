@@ -43,7 +43,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import paramiko
 
-__version__ = "5.1.2"
+__version__ = "5.2.0"
 
 # ── 老设备 SSH 兼容（2026-09-01 修复）──
 # paramiko 3.x 默认从偏好列表移除了 ssh-rsa（host key）和 group1/group14-sha1（kex），
@@ -4053,7 +4053,7 @@ class NetworkInspectGUI:
           - 所有 tk 变量的读取必须在主线程完成（工作线程只收发队列消息）。
         """
         self.root = root
-        self.root.title("Network Inspection System V3 — 网络巡检工具")
+        self.root.title(f"Network Inspection System V3 (v{__version__}) — 网络巡检工具")
         self.root.geometry("1120x860")
         self.root.minsize(800, 600)
 

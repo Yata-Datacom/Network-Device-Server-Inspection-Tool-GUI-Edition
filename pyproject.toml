@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "network-inspection-tool"
-version = "5.1.2"
+version = "5.2.0"
 description = "SSH-based multi-vendor network device inspection GUI (Huawei/H3C/Ruijie/Cisco/Linux) with loop & hardware-health alerting"
 readme = "README.md"
 requires-python = ">=3.10"

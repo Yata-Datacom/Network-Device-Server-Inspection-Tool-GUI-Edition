@@ -792,6 +792,13 @@ def parse_device_sample(cmd_outputs: Dict[str, str], device: str = "?",
             sample["unsupported"][cmd] = f"解析失败: {e}"
             continue
 
+        if field == "macs":
+            # 三层设备（BRAS / ME60 …）的 MAC 表带 PEVLAN/CEVLAN 列 —— 那是三层转发表，
+            # 不是二层 MAC 表。在它上面做"同 MAC 多端口 / 漂移"判定没有意义（表本来就小、
+            # 语义也不同），标记 l2_table_na 让 D13/D1/D9 跳过，避免把正常现象误判成环路。
+            if re.search(r"\bPEVLAN\b", out or "") and re.search(r"\bCEVLAN\b", out or ""):
+                sample["l2_table_na"] = True
+
         if field == "interfaces_brief":
             for i in parsed:
                 brief_ifaces[i["name"]] = i
