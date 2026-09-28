@@ -2,10 +2,10 @@
 
 <img src="app_icon.ico" width="96" alt="Network Inspection Tool" />
 
-# 网络设备巡检工具 · Network Inspection Tool
+# Network Inspection Tool
 
-**基于 SSH 的自动化网络设备 / 服务器巡检工具**：多厂商巡检、异常标红、配置备份、流量测试、安全核查、主动探测，以及**环路 / 健康告警**（环路特征、光衰、温度、电源）<br/>
-<sub>**SSH-based automated inspection tool for network devices and servers — multi-vendor inspection, anomaly flagging, config backup, traffic test, security audit, active probes, and ring/health alerting (loop detection, optical/temperature/power).**</sub>
+**SSH-based automated inspection tool for network devices and servers** — multi-vendor inspection, anomaly flagging, config backup, traffic test, security audit, active probes, and **ring/health alerting** (loop detection, optical/temperature/power).<br/>
+<sub>[**English**](README.md) · [**简体中文**](README.zh-CN.md)</sub>
 
 <a href="https://github.com/Yata-Datacom/Network-Device-Server-Inspection-Tool-GUI-Edition/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/Yata-Datacom/Network-Device-Server-Inspection-Tool-GUI-Edition/ci?style=for-the-badge&label=CI&color=5E81AC&logo=githubactions&logoColor=white" alt="CI" /></a>
 <a href="https://github.com/Yata-Datacom/Network-Device-Server-Inspection-Tool-GUI-Edition/actions/workflows/build.yml"><img src="https://img.shields.io/github/actions/workflow/status/Yata-Datacom/Network-Device-Server-Inspection-Tool-GUI-Edition/build?style=for-the-badge&label=Build%20EXE&color=5E81AC&logo=githubactions&logoColor=white" alt="Build EXE" /></a>
@@ -16,303 +16,93 @@
 
 </div>
 
-> 给网络运维与驻场工程师的 SSH 巡检工具：一台 Windows 电脑、一份设备清单，就能把多厂商巡检、配置备份、流量测试和环路告警一次跑完。
-> An SSH-based inspection tool for network operations and on-site engineers: one Windows PC and one device list are enough to run multi-vendor inspection, config backup, traffic tests and ring alerting in one pass.
+> An SSH inspection tool for network operations and on-site engineers: one Windows PC and one device list are enough to run multi-vendor inspection, config backup, traffic tests and ring alerting in one pass.
 
 ---
 
-## ⬇️ 下载 · Download
+## ⬇️ Download
 
-**⬇️ 下载 / Downloads:** [Releases](https://github.com/Yata-Datacom/Network-Device-Server-Inspection-Tool-GUI-Edition/releases)（Windows 单文件 exe，免安装、无需 Python）
+**⬇️ Download:** [Releases](https://github.com/Yata-Datacom/Network-Device-Server-Inspection-Tool-GUI-Edition/releases) — single-file Windows exe, no install needed, no Python required.
 
-Grab the single-file Windows exe from **Releases** — no install needed, no Python required.
-
-**v5.1.2** · [CHANGELOG](CHANGELOG.md) · [开发与测试](#开发与测试--development--tests)
+**v5.1.2** · [CHANGELOG](CHANGELOG.md) · [Development & Tests](#开发与测试--development--tests)
 
 ---
 
-## 🧭 版本线 · Version lines
+## 🧭 Version lines
 
-| 版本 · Version | 定位 · Role | 功能 · Features |
+| Version | Role | Features |
 |---|---|---|
-| **V5** `net_inspect_gui_v5.py` | 个人版（全功能）· Personal, full-featured | 巡检 + 配置备份 + 流量测试 + 安全核查 + 主动探测 + **环路告警（12 条判据，含跨设备关联）** · Inspection + config backup + traffic test + security audit + active probes + **ring alert (12 checks, incl. cross-device correlation)** |
-| **V3** `net_inspect_gui.py` | 个人版（基础）· Personal, basic | 同 V5 但环路判据为 10 条（无 BPDU 自环 / 跨设备关联）※ 主干源码，持续演进 · Same as V5 but 10 ring checks (no BPDU self-loop / cross-device correlation) ※ trunk source, actively evolving |
-| **V2** | 同事版 · Colleague build | 巡检 + 配置备份（无流量测试等重功能）；**源码不在本仓库**（另有内部交付版本 V4 = V2 + 环路告警）· Inspection + config backup (no heavy features such as traffic test); **source not in this repository** (internal delivery V4 = V2 + ring alert) |
+| **V5** `net_inspect_gui_v5.py` | Personal, full-featured | Inspection + config backup + traffic test + security audit + active probes + **ring alert (12 checks, incl. cross-device correlation)** |
+| **V3** `net_inspect_gui.py` | Personal, basic | Same as V5 but 10 ring checks (no BPDU self-loop / cross-device correlation) ※ trunk source, actively evolving |
+| **V2** | Colleague build | Inspection + config backup (no heavy features such as traffic test); **source not in this repository** (internal delivery V4 = V2 + ring alert) |
 
-> V4（同事版 + 环路告警的裁剪版）为内部交付版本，不在本仓库公开。
 > V4 (colleague build + ring alert, trimmed) is an internal delivery and is not published in this repository.
 
 ---
 
-## 🚨 故障视图 · Fault view（v5.2.0 新增 · 面向"不会数通的人"）
+## 🚨 Fault view (new in v5.2.0, for people who don't do networking)
 
-Ring Alert 页签的结果**默认显示「故障视图」**：不再是上百条散点告警，而是**几个故障**，
-每个故障都直接回答操作员最关心的四件事：
+Ring Alert results **show the "fault view" by default**: no longer hundreds of scattered alerts, but **a few faults**,
+each one answering the four things an operator cares about most:
 
 ```
-❗ 故障 1｜二层环路（网络里有一根线接成了圈）   ← 先处理这个
+❗ Fault 1 | Layer-2 loop (somewhere a cable was patched into a ring)   ← handle this one first
 ──────────────────────────────────────────────
-故障设备：10.21.11.193      置信度：高
-涉及告警：4 条（D13×1、D4×1、D7×2）
+Faulty device: 10.21.11.193      Confidence: high
+Alerts involved: 4 (D13×1, D4×1, D7×2)
 
-【现象】
-  · 涉及端口 10 个：XGE0/0/2、XGE0/0/3 …
-  · 广播量最高约 7244 pps（正常应低于 1000）
-  · 源头 MAC：f033-e508-0567   涉及 VLAN：1000
-【判断】
-  同一个 MAC 同时出现在这些端口上 → 这些端口之间被线路环接了。
-【怎么处理】
-  先拔掉 **XGE0/0/3** 的网线，等 1 分钟看广播量有没有降下来
-  若没降，继续依次拔 XGE0/0/4、0/0/5 …
-  降下来的那一根就是环路的接入点；顺着它找另一端（多半私接了台小交换机）
+[What is seen]
+  · 10 ports involved: XGE0/0/2, XGE0/0/3 …
+  · Peak broadcast ≈ 7244 pps (normally it should stay below 1000)
+  · Source MAC: f033-e508-0567   VLAN: 1000
+[Diagnosis]
+  The same MAC shows up on all these ports → these ports are looped together by the cabling.
+[What to do]
+  Unplug the cable on **XGE0/0/3** first, wait 1 minute and see whether the broadcast rate drops
+  If it does not, keep unplugging XGE0/0/4, 0/0/5 … in turn
+  The one that drops the rate is the access point of the loop; follow it to the other end (most likely an unmanaged switch someone patched in privately)
 ```
 
-- **聚合**：同一设备的「多端口同速率广播 + 环路日志 + 同 MAC 多端口」→ 合成**一个**故障
-- **根因打分**：同设备同 MAC 多端口(★★★) · 跨设备同 MAC(★★★) · 设备自检环路日志(★★★) ·
-  多口同速率(★★) · MAC 漂移(★) → 排出"最可能的故障点"，第一条标「先处理这个」
-- **单端口轻微广播**不会升级成故障，统一并入一条「终端广播异常（大概率不是环路）」
-- 需要技术细节时，右上角切到「**告警明细**」看逐条证据（原表格视图不变）
-- 导出的 HTML 报告同样**故障清单置顶 + 明细在下**
+- **Aggregation**: "multi-port equal-rate broadcast + loop log + same MAC on several ports" on one device → merged into **one** fault
+- **Root-cause scoring**: same device, same MAC on several ports (★★★) · cross-device same MAC (★★★) · device self-check loop log (★★★) ·
+  several ports at equal rate (★★) · MAC flapping (★) → ranks the "most likely fault point" and marks the first one "handle this one first"
+- **A single port with light broadcast** never escalates into a fault; it is folded into one "terminal broadcast anomaly (most likely not a loop)"
+- Need technical detail? Switch to "**Alert details**" in the top right for the per-item evidence (the original table view is unchanged)
+- An exported HTML report likewise puts the **fault list on top and the details below**
 
-**新判据 D13｜同设备 MAC 多端口冲突**：同一 MAC（同 VLAN）出现在同一设备的 ≥2 个非聚合端口
-→ 单轮即可判定，直接给出"哪两个口之间被环接了"（D4 也从“逐口各报”改为“环路组聚合”）。
+**New check D13 | same-device MAC multi-port conflict**: the same MAC (same VLAN) appearing on ≥2 non-aggregated ports of one device
+→ a single round is enough to decide it, and it names directly "which two ports are looped together" (D4 also changed from "report each port" to "loop-group aggregation").
 
-**采样体检**：每次采样会逐条记录命令的字节数/行数/是否报错，用来区分
-「命令没拿到数据（设备不支持/大表被截断）」与「拿到了但没发现环路」；页签提供**大表模式**（更大的静默窗口与超时）。
+**Sampling health check**: every sampling round records each command's bytes/lines/whether it errored, to tell
+"the command got no data (device unsupported / large table truncated)" apart from "data came back but no loop was found"; the tab offers a **large-table mode** (bigger quiet window and timeout).
 
 ---
 
-## 🇨🇳 中文说明 · Chinese guide
+## 🚀 Quick Start
 
-### 🚀 快速开始 · Quick start
-
-| 方式 · Way | 做法 · How to do it |
+| Way | How to do it |
 |------|------|
-| 独立 exe（推荐）· Standalone exe (recommended) | 到 [Releases](https://github.com/Yata-Datacom/Network-Device-Server-Inspection-Tool-GUI-Edition/releases) 下载，双击即用，无需装 Python · Download from Releases, double-click, no Python install |
-| 源码运行 · Run from source | `pip install paramiko openpyxl pyyaml` → `python net_inspect_gui_v5.py` |
-| 启动脚本 · Launcher script | 双击 `启动巡检工具.bat`（走源码）· Double-click `启动巡检工具.bat` (runs from source) |
+| Standalone exe (recommended) | Download from [Releases](https://github.com/Yata-Datacom/Network-Device-Server-Inspection-Tool-GUI-Edition/releases), double-click, no Python install |
+| Run from source | `pip install paramiko openpyxl pyyaml` → `python net_inspect_gui_v5.py` |
+| Launcher script | Double-click `启动巡检工具.bat` (runs from source) |
 
-设备清单放在程序同目录：`devices.xlsx`（推荐，五列）或 `devices.txt`。
-Put the device list next to the program: `devices.xlsx` (recommended, five columns) or `devices.txt`.
+Put the device list next to the program — `devices.xlsx` (recommended, five columns) or `devices.txt` — and start.
 
-### ✨ 功能一览 · Features at a glance
+## ✨ Features
 
-| | 中文 | English |
-| :-- | :-- | :-- |
-| 🔎 | **多厂商巡检** —— 华为 / H3C / Cisco / 锐捷 / Linux 一套流程跑通 | **Multi-vendor inspection** — Huawei / H3C / Cisco / Ruijie / Linux in one pass |
-| 🔴 | **异常标红** —— CPU / 内存 / 磁盘 / 接口超阈值自动标红 | **Anomaly flagging** — CPU / memory / disk / interface over threshold highlighted |
-| 💾 | **配置备份** —— 批量备份 `running-config` / `current-configuration` | **Config backup** — batch backup of `running-config` / `current-configuration` |
-| 🚦 | **流量测试** *(V5)* —— UDP / ICMP / TCP / TCP-SYN 压测 + 内置 TCP 接收端 | **Traffic test** *(V5)* — UDP / ICMP / TCP / TCP-SYN generators + built-in TCP receiver |
-| 🛡️ | **安全核查** *(V5)* —— DHCP snooping / DAI / DNS / 端口隔离 / 端口安全 只读核查 | **Security audit** *(V5)* — read-only DHCP snooping / DAI / DNS / port isolation / port security checks |
-| 📡 | **主动探测** *(V5)* —— ICMP / DNS / DHCP / ARP / VLAN 探测，用于现场故障定位 | **Active probes** *(V5)* — ICMP / DNS / DHCP / ARP / VLAN probes for on-site fault location |
-| 🔁 | **环路告警** *(V5)* —— 两轮采样差分 + 原始证据行 + 置信度 + 建议动作 | **Ring alert** *(V5)* — two-round sampling diff, raw evidence line, confidence and suggested action |
-| 🚨 | **故障视图** *(v5.2.0)* —— 把上百条散点告警收敛成几个故障，直接给出处置步骤 | **Fault view** *(v5.2.0)* — collapses scattered alerts into a few faults, each with clear actions |
-| 📄 | **报告导出** —— HTML / CSV 报告，故障清单置顶 + 明细在下 | **Report export** — HTML / CSV, fault list on top and details below |
+| | Feature |
+| :-- | :-- |
+| 🔎 | **Multi-vendor inspection** — Huawei / H3C / Cisco / Ruijie / Linux in one pass |
+| 🔴 | **Anomaly flagging** — CPU / memory / disk / interface over threshold highlighted |
+| 💾 | **Config backup** — batch backup of `running-config` / `current-configuration` |
+| 🚦 | **Traffic test** *(V5)* — UDP / ICMP / TCP / TCP-SYN generators + built-in TCP receiver |
+| 🛡️ | **Security audit** *(V5)* — read-only DHCP snooping / DAI / DNS / port isolation / port security checks |
+| 📡 | **Active probes** *(V5)* — ICMP / DNS / DHCP / ARP / VLAN probes for on-site fault location |
+| 🔁 | **Ring alert** *(V5)* — two-round sampling diff, raw evidence line, confidence and suggested action |
+| 🚨 | **Fault view** *(v5.2.0)* — collapses scattered alerts into a few faults, each with clear actions |
+| 📄 | **Report export** — HTML / CSV, fault list on top and details below |
 
-### 📋 功能列表 · Feature list
-
-| # | 功能 | 说明 |
-|---|------|------|
-| 1 | 单机巡检 | 连接单台设备，命令集可编辑 |
-| 2 | 批量巡检 | 并行多设备 + 异常检测 + HTML/CSV 报告导出 |
-| 3 | 配置备份 | 备份 `running-config` / `current-configuration` |
-| 4 | 连接信息 | `profiles.json` 管理常用连接 |
-| 5 | 异常检测 | CPU / 内存 / 磁盘超阈值自动标红 |
-| 6 | 紧凑输出 | 仅保留关键指标行 |
-| 7 | 快速巡检 | 仅核心命令（cpu/mem/alarm/device/stack） |
-| 8 | 状态列 | 批量巡检实时 Running / OK / FAILED |
-| 9 | Ping 预检 | SSH 前预检，不可达直接跳过 |
-| 10 | 输出搜索 | 关键词高亮 + ↑↓ 跳转 + 匹配计数 |
-| 11 | 异常跳转 | 「⚠ 上一异常 / 下一异常」直接跳，不用从头翻 |
-| 12 | 预设方案 | 保存/加载自定义命令集 |
-| 13 | 流量测试 *(V5)* | UDP / ICMP / TCP / TCP-SYN 压测 + 内置 TCP 接收端 |
-| 14 | 安全核查 *(V5)* | DHCP snooping / DAI / DNS / 端口隔离 / 端口安全 只读核查 |
-| 15 | 主动探测 *(V5)* | ICMP / DNS / DHCP / ARP / VLAN 探测，用于现场故障定位 |
-| 16 | **环路告警** *(V5)* | **环路特征 + 硬件健康告警，见下节** |
-
-### 🔁 环路告警页签 · Ring alert tab（V5 新增）
-
-把「环路 / 异常告警」做成巡检工具的一个页签：每条告警都带**原始证据行** + 置信度 +
-建议动作 —— 宁可报“可疑”让人工判断，也不武断下结论。
-
-**两种用法**
-
-| 模式 | 说明 |
-|------|------|
-| **A. 在线两轮采样**（主力） | 工具自己连设备跑两遍（间隔可设，默认 30 分钟），**对两轮结果做差分**：只有这样才能看出“正在变化” |
-| **B. 离线分析报告** | 选 1~2 份巡检导出的报告 CSV 分析；适合事后复盘、或没有设备访问权限时 |
-
-**为什么必须两轮**：CRC 等计数器是**历史累计值**（可能是几年前留下的），单看一次快照
-无法判断“是否还在恶化”。差分类判据（MAC 漂移、CRC 增长、广播速率、链路震荡、TC 增量）
-**必须两轮**。单轮只能出关键字类（日志事件）和绝对值类（光功率越界、温度、组件状态）。
-
-**检测项**
-
-| 编号 | 名称 | 判据要点 | 数据来源 |
-|---|---|---|---|
-| D1 | MAC 漂移 | 同一 MAC+VLAN 两轮间换了端口 | `display mac-address` |
-| D2 | STP 拓扑变化 | 每分钟 TC 增量超阈值（接入 5 / 汇聚 15 / 核心 30） | `display stp` |
-| D3 | 根桥变更 | 根桥 ID / 根端口变化 | `display stp` |
-| D4 | 广播/组播风暴 | 广播+组播包速率超阈值 | `display interface` |
-| D5 | 接口误码增长 | CRC / 输入错误每分钟增量超阈值 | `display interface [brief]` |
-| D6 | 链路震荡 | 每小时 up/down 次数超阈值 | `display interface` |
-| D7 | 厂家日志关键字 | 日志事件名映射 | `display logbuffer` / `display alarm active` |
-| D10 | 光衰 | 收光功率过低 / 两轮下降 > 3 dB / 模块自报越界 | `display interface`（Rx/Tx Power 行） |
-| D11 | 温度 | 超阈值或快速升温 | `display temperature` |
-| D12 | 电源 / 组件 | 任一组件状态非 `Normal`；正常数减少（冗余丢失） | `display device` |
-| D8 * | BPDU 异常 | BPDU 速率异常；收到本机 Bridge ID 的 BPDU = **自环特征** | `display stp interface` |
-| D9 * | 跨设备关联 | **同一 MAC 同时出现在两台设备**；多台设备同一窗口 TC 同时跳增 | 多设备比对 |
-
-\* 深度检测项，默认不勾选。
-
-**改规则只改一个文件**：程序同目录的 `rules.yaml`（首次运行自动生成）——阈值 + 日志关键字。
-改完点页签里的「重新加载规则」即时生效，**不用重新打包**。
-
-> ⚠️ 关键字是**正则**（大小写不敏感）。**不要用裸词**：`Alarm` 会命中健康设备日志里的
-> `alarmID=0x…`（实测误报 256 次）。要写**完整事件名**，如 `MSTP/4/PORT_STATE_DISCARDING`、
-> `MAC/4/MAC_MOVE`。
->
-> 找事件名的方法：抓一段日志，用正则 `%%\d+([A-Za-z0-9_]+)/(\d)/([A-Za-z0-9_()\-]+)` 统计。
-> 量大但每个健康设备都有的（如用户侧上下线）属噪声，不要收。
-
-**结果区**：告警表红=高危 / 橙=一般 / 黄=提示；双击看完整证据 + 建议；
-「⚠ 上一异常 / 下一异常」快速跳转；支持级别筛选 + 关键字搜索；导出 HTML/CSV 可自选路径。
-
-**已知限制**
-1. 单轮看不出“正在增长”，要判断是否恶化必须两轮。
-2. 设备可能不支持某些命令（例如某些 BRAS 上 `display transceiver` / `display temperature`
-   会报 `Unrecognized command`）→ 程序记入「检测能力提示」，**不会误报告警**。
-3. 日志关键字会命中例行事件（链路 up/down 等），所以必须看证据行判断，别只看红点。
-4. 光功率优先采用设备自报的告警门限；模块型号未知时只信趋势。
-5. 解析器目前**完整实现华为**；其他厂商命令能跑但会记入「检测能力提示」，拿到真实输出后可扩展。
-
-### ⌨️ 快捷键 · Keyboard shortcuts
-
-| 快捷键 | 作用 |
-|--------|------|
-| **Enter** | Single Host 输入框内按 → 启动单机巡检 |
-| **Ctrl+Enter** | 根据当前标签页启动对应操作 |
-| **Esc** | 停止所有正在执行的任务 |
-
-### 🔍 输出区搜索 · Output search
-
-在输出区上方搜索栏输入关键词：所有匹配**黄色**高亮；**Enter** / **↓** 下一个，
-**↑** 上一个；当前项**橙色**；右侧显示匹配数量（如 `15 match(es)`）。
-
-### 📏 异常检测规则 · Anomaly detection rules
-
-| 设备类型 | 检测指标 | 阈值 | 来源 |
-|----------|---------|------|------|
-| Linux | CPU Load (5min) | > 4.0 | `uptime` |
-| Linux | 磁盘使用率 | > 80% | `df -h` |
-| Cisco | CPU 5sec Utilization | > 80% | `show processes cpu sorted` |
-| Huawei | CPU Usage | > 80% | `display cpu-usage` |
-| Huawei | Memory Usage | > 80% | `display memory-usage` |
-
-### 📑 设备列表格式 · Device list format
-
-**`devices.txt`**（向后兼容）
-```
-# 格式: IP:用户名:密码:[类型]:"命令1,命令2,..."
-# 类型可选 (linux/cisco/huawei/h3c/ruijie)，默认 cisco；支持 # 注释行
-192.0.2.1:admin:yourpass:cisco:"show version,show ip int brief"
-192.0.2.2:root:yourpass:linux:"hostnamectl --static,uname -r"
-192.0.2.3:admin:yourpass:huawei:"display version,display ip int brief"
-```
-
-**`devices.xlsx`**（推荐，方便复制粘贴）——五列，第 1 行表头：
-
-| A | B | C | D | E |
-|---|---|---|---|---|
-| IP | 用户名 | 密码 | 类型 | 命令（逗号或换行分隔）|
-
-> 同目录同时存在两种文件时，**优先读 xlsx**。批量页有「→ Excel」按钮可把
-> 现有 txt 一键转成带样式的 xlsx。
-
-### 🗂️ 标签页说明 · Tabs
-
-| 页签 | 说明 |
-|---|---|
-| **Single Host** | 单机巡检：异常检测 / 紧凑输出 / 快速巡检 / Ping 预检 均可勾选 |
-| **Batch Inspection** | 批量巡检：并发 1~10（默认 3）；Status 列 `---` → `Running...` → `OK` / `UNREACHABLE` / `FAILED` / `WARNING`；异常统计按设备分组显示 |
-| **Config Backup** | 备份配置到 `backups/<类型>/<IP>/<IP>_<时间>.cfg`；Linux 设备不参与 |
-| **Profiles** | 连接信息管理，Save 后单机页下拉框可用 |
-| **Traffic Test** *(V5)* | UDP / ICMP / TCP / TCP-SYN 压测 + 内置接收端。⚠ `rate=0` 为不限速全速发（实测单线程约 9.7 万包/秒），**别在本机/环回开 0** |
-| **Security Test** *(V5)* | 只读核查：DHCP snooping / DAI / DNS / 端口隔离 / 端口安全，给修复建议，不下发任何配置 |
-| **Active Test** *(V5)* | ICMP / DNS / DHCP / ARP / VLAN 主动探测，用于现场定位间歇性故障 |
-| **Ring Alert** *(V5)* | 环路 / 健康告警（见上节） |
-
-### ❓ 常见问题 · FAQ
-
-**Q: 华为设备报 "SSH session not active"？**
-已修复，Cisco/Huawei 使用 `invoke_shell()` 交互式通道。
-
-**Q: 网络设备输出被截断/分页？**
-自动发送禁用分页命令：Cisco/Ruijie `terminal length 0`，Huawei/H3C `screen-length 0 temporary`。
-
-**Q: 老设备连不上（`no acceptable host key` / 算法不匹配）？**
-老型号只提供 `ssh-rsa` host key 与 sha1 kex。本工具已在启动时把这些算法加回偏好列表；
-**打包/运行请用 paramiko 3.5.x**（paramiko 4/5 已彻底移除 `ssh-rsa` 实现，加回偏好也无效）。
-
-**Q: 批量巡检速度慢？**
-把并发数调到 5~10（批量页）。
-
-**Q: 报告/配置怎么找不到了？**
-程序把 `profiles.json` / `presets.json` / `backups/` / `reports/` 写在**程序（exe）同目录**——
-打包成单文件 exe 时，`__file__` 指向临时解包目录，早期版本曾因此落在 `%TEMP%\_MEIxxxx`（重启即丢），已修复。
-
-**Q: 环路告警「A. 在线两轮采样」跑完没告警，怎么区分"真没问题"和"根本没连上"？**
-看结果页的**状态栏**，它会写「数据：第1轮 x/y 台有数据；第2轮 x/y 台有数据」——
-两轮都跑到了、且都有数据，说明采样本身正常（没告警 = 两轮之间没有变化，是好事）。
-若某一轮是 `0 台有数据`，弹窗会直接列出失败原因（连接超时 / 认证失败 / 命令不被该平台支持）。
-单轮快照与两轮差分的提示文案是**分开**的，不会再出现"明明跑了两轮却说单轮"的误导。
-
-> 修复记录（2026-09-17）：早期版本调用巡检工具的 SSH 帮助函数时**漏传 `client` 参数**
-> （把"就地连接、返回 None"的 `_ssh_connect` 当成返回连接对象用），导致**每台设备都连接
-> 失败**、两轮均为空数据，并且无论几轮都提示"单轮时看不出…"。现改为：
-> `_create_ssh_client()` → `_ssh_connect(client, host, 22, user, pwd, timeout=…)` →
-> `_run_commands_via_shell(client, devtype, {标题: 命令})`（关分页与老设备算法降级由后者内部处理）。
-
-**Q: 如何修改异常阈值？**
-改 `net_inspect_gui.py` 里的 `ANOMALY_RULES`；环路告警的阈值改 `rules.yaml`（不用重打包）。
-
-**Q: 如何重新打包 exe？**
-```bash
-# V5（个人版）
-../.venv-build/Scripts/python -m PyInstaller --clean --noconfirm NetworkInspectionV5.spec
-# 旧版（V3）
-pyinstaller --noconfirm NetworkInspectionV3.spec
-```
-打包前先关掉正在运行的 exe（文件被占用会失败）。
-
-### 📁 项目结构 · Project layout
-
-```
-network_A/
-├── net_inspect_gui.py          # V3 主程序（主干源码）
-├── ring_panel.py               # 环路告警页签（界面 + 在线两轮采样 + 离线分析）
-├── ring_analyze.py             # 编排层：解析 → 跑判据 → 汇总/导出
-├── ring_rules.py               # 判据引擎（12 条规则，纯函数，厂商无关）
-├── ring_parsers.py             # 解析层：各厂商命令输出 → 结构化数据
-├── rules.yaml                  # 阈值 + 日志关键字（可自行扩展）
-├── test_ring_rules.py          # 判据引擎回归测试
-├── v5/                         # V5 个人版（自包含：主程序 + 上述模块 + README）
-├── 启动巡检工具.bat             # 源码启动脚本
-├── NetworkInspectionV3.spec    # 打包配置
-└── 环路检测-规则清单.md          # 判据规格书（命令 / 阈值 / 误报场景）
-```
-
----
-
-## 🇬🇧 English
-
-### Quick Start
-
-1. Download the exe from [Releases](https://github.com/Yata-Datacom/Network-Device-Server-Inspection-Tool-GUI-Edition/releases) and run it (no install needed), **or**
-2. Run from source: `pip install paramiko openpyxl pyyaml` then `python net_inspect_gui_v5.py`
-3. Put a device list next to the program (`devices.xlsx` or `devices.txt`) and start.
-
-### Features
+## 📋 Feature list
 
 | # | Feature | Description |
 |---|---------|-------------|
@@ -333,95 +123,221 @@ network_A/
 | 15 | Active Test (V5) | ICMP / DNS / DHCP / ARP / VLAN probes for on-site fault location |
 | 16 | **Ring Alert (V5)** | **Loop & hardware-health alerting — see below** |
 
-### Ring Alert tab (V5)
+## 🔁 Ring alert tab (V5)
 
-Detects loop symptoms and hardware degradation. Every alert carries the **raw evidence line**,
-a confidence level, and a suggested action — human decides, the tool never guesses silently.
+Loop and hardware-health alerting is a tab inside the inspection tool: every alert carries the **raw evidence line**,
+a confidence level and a suggested action — the tool would rather report "suspicious" for a human to judge than
+jump to a conclusion.
 
 **Two ways to use it**
 
 | Mode | What it does |
-|---|---|
-| **A. Online two-round sampling** | The tool logs in twice (interval configurable, default 30 min) and **diffs the two samples** — this is the only way to see *what is changing* |
-| **B. Offline report analysis** | Analyse 1–2 exported inspection reports (CSV); good for after-the-fact review |
+|------|------|
+| **A. Online two-round sampling** (primary) | The tool logs in twice itself (interval configurable, default 30 min) and **diffs the two samples** — this is the only way to see *what is changing* |
+| **B. Offline report analysis** | Analyse 1~2 exported inspection reports (CSV); good for after-the-fact review, or when you have no access to the devices |
+
+**Why two rounds are mandatory**: counters such as CRC are **cumulative historical values** (possibly left over from
+years ago), so a single snapshot cannot tell whether it "is still getting worse". Diff-based checks (MAC flapping,
+CRC growth, broadcast rate, link flapping, TC delta) **require two rounds**. A single round can only produce
+keyword-based results (log events) and absolute-value results (optical power out of range, temperature, component state).
 
 **Checks**
 
-| ID | Check | Basis |
-|---|---|---|
-| D1 | MAC flapping | Same MAC+VLAN moved port between rounds |
-| D2 | STP topology change | Topology-change delta per minute over threshold |
-| D3 | Root bridge change | Root ID / root port changed |
-| D4 | Broadcast storm | Broadcast+multicast packet rate over threshold |
-| D5 | Interface errors growing | CRC / input-error delta per minute |
-| D6 | Link flapping | up/down count per hour |
-| D7 | Vendor log keywords | Event-name mapping (full event names, not bare words) |
-| D10 | Optical degradation | Rx power low / dropping > 3 dB / module self-reported alarm |
-| D11 | Temperature | Over threshold or fast rise |
-| D12 | Power / component | Any component not `Normal`; redundancy lost |
-| D8 * | BPDU anomaly | BPDU rate; receiving own Bridge ID on a port = self-loop |
-| D9 * | Cross-device | Same MAC on two devices; simultaneous TC burst |
+| ID | Check | Basis | Source |
+|---|---|---|---|
+| D1 | MAC flapping | Same MAC+VLAN moved port between rounds | `display mac-address` |
+| D2 | STP topology change | Topology-change delta per minute over threshold (access 5 / aggregation 15 / core 30) | `display stp` |
+| D3 | Root bridge change | Root bridge ID / root port changed | `display stp` |
+| D4 | Broadcast/multicast storm | Broadcast+multicast packet rate over threshold | `display interface` |
+| D5 | Interface errors growing | CRC / input-error delta per minute over threshold | `display interface [brief]` |
+| D6 | Link flapping | up/down count per hour over threshold | `display interface` |
+| D7 | Vendor log keywords | Log event-name mapping | `display logbuffer` / `display alarm active` |
+| D10 | Optical degradation | Rx power too low / dropping more than 3 dB between rounds / module self-reported alarm | `display interface` (Rx/Tx Power lines) |
+| D11 | Temperature | Over threshold or rising fast | `display temperature` |
+| D12 | Power / component | Any component not `Normal`; healthy count dropping (redundancy lost) | `display device` |
+| D8 * | BPDU anomaly | Abnormal BPDU rate; receiving a BPDU carrying this device's own Bridge ID = **self-loop signature** | `display stp interface` |
+| D9 * | Cross-device correlation | **The same MAC on two devices at once**; TC jumping on several devices in the same window | multi-device comparison |
 
 \* deep checks, off by default.
 
-**Thresholds & keywords** live in `rules.yaml` (auto-created next to the program on first run).
-Edit it and click **Reload rules** — no rebuild needed.
+**Changing the rules touches one file**: `rules.yaml` next to the program (auto-created on first run) — thresholds + log keywords.
+Edit it and click **Reload rules** in the tab for it to take effect immediately, **no repackaging needed**.
 
-> ⚠️ Keyword patterns are **regex, case-insensitive**. Never use bare words: `Alarm` matches
-> `alarmID=0x…` on healthy devices (256 false hits measured). Use full event names, e.g.
+> ⚠️ Keywords are **regex** (case-insensitive). **Do not use bare words**: `Alarm` matches
+> `alarmID=0x…` in the logs of healthy devices (256 false hits measured). Write the **full event name**, e.g.
 > `MSTP/4/PORT_STATE_DISCARDING`, `MAC/4/MAC_MOVE`.
+>
+> How to find event names: capture a chunk of logs and count with the regex `%%\d+([A-Za-z0-9_]+)/(\d)/([A-Za-z0-9_()\-]+)`.
+> High-volume events that every healthy device has (such as user-side link up/down) are noise — do not collect them.
 
-### Keyboard Shortcuts
+**Result area**: alert table red = high risk / orange = medium / yellow = info; double-click for the full evidence + suggested action;
+"⚠ Previous anomaly / Next anomaly" jumps straight there; severity filter + keyword search; export HTML/CSV to a path of your choice.
+
+**Known limitations**
+1. A single round cannot show "currently growing"; deciding whether it is worsening requires two rounds.
+2. A device may not support some commands (for example `display transceiver` / `display temperature`
+   return `Unrecognized command` on some BRAS) → the tool records it as a "capability note" and **does not raise a false alert**.
+3. Log keywords will also hit routine events (link up/down and so on), so always judge from the evidence line — do not look at the red dot alone.
+4. Optical power prefers the alarm threshold reported by the device itself; when the module model is unknown only the trend is trusted.
+5. The parsers are currently **fully implemented for Huawei**; other vendors' commands run, but are recorded as "capability notes" and can be extended once real output is available.
+
+## ⌨️ Keyboard shortcuts
 
 | Shortcut | Action |
 |----------|--------|
-| **Enter** | Start inspection when focused in Single Host input |
-| **Ctrl+Enter** | Start operation based on current tab |
+| **Enter** | Press inside the Single Host input → start the single-host inspection |
+| **Ctrl+Enter** | Start the operation for the current tab |
 | **Esc** | Stop all running tasks |
+
+## 🔍 Output search
+
+Type a keyword into the search bar above the output area: every match is highlighted **yellow**; **Enter** / **↓** for the next one,
+**↑** for the previous one; the current match is **orange**; the match count (e.g. `15 match(es)`) is shown on the right.
+
+## 📏 Anomaly detection rules
+
+| Device type | Metric | Threshold | Source |
+|----------|---------|------|------|
+| Linux | CPU Load (5min) | > 4.0 | `uptime` |
+| Linux | Disk usage | > 80% | `df -h` |
+| Cisco | CPU 5sec Utilization | > 80% | `show processes cpu sorted` |
+| Huawei | CPU Usage | > 80% | `display cpu-usage` |
+| Huawei | Memory Usage | > 80% | `display memory-usage` |
+
+## 📑 Device list format
+
+**`devices.txt`** (backwards compatible)
+```
+# Format: IP:user:password:[type]:"command1,command2,..."
+# type is optional (linux/cisco/huawei/h3c/ruijie), default cisco; # comment lines are supported
+192.0.2.1:admin:yourpass:cisco:"show version,show ip int brief"
+192.0.2.2:root:yourpass:linux:"hostnamectl --static,uname -r"
+192.0.2.3:admin:yourpass:huawei:"display version,display ip int brief"
+```
+
+**`devices.xlsx`** (recommended, easy copy-paste) — five columns, row 1 is the header:
+
+| A | B | C | D | E |
+|---|---|---|---|---|
+| IP | Username | Password | Type | Commands (comma or newline separated) |
+
+> When both files exist in the same directory, **xlsx is read first**. The batch tab has a "→ Excel" button
+> that converts an existing txt into a styled xlsx in one click.
+
+## 🗂️ Tabs
+
+| Tab | What it does |
+|---|---|
+| **Single Host** | Single-host inspection: anomaly detection / compact output / quick inspection / ping pre-check are all optional |
+| **Batch Inspection** | Parallel inspection: concurrency 1~10 (default 3); Status column `---` → `Running...` → `OK` / `UNREACHABLE` / `FAILED` / `WARNING`; anomaly statistics grouped per device |
+| **Config Backup** | Backs up configurations to `backups/<类型>/<IP>/<IP>_<时间>.cfg`; Linux devices are excluded |
+| **Profiles** | Saved connection management; after Save the single-host dropdown is populated |
+| **Traffic Test** *(V5)* | UDP / ICMP / TCP / TCP-SYN generators + built-in receiver. ⚠ `rate=0` sends at full unthrottled speed (about 97k packets/s single-threaded) — **never use 0 on localhost/loopback** |
+| **Security Test** *(V5)* | Read-only checks: DHCP snooping / DAI / DNS / port isolation / port security, with fix suggestions, pushing no configuration at all |
+| **Active Test** *(V5)* | ICMP / DNS / DHCP / ARP / VLAN active probes for locating intermittent faults on site |
+| **Ring Alert** *(V5)* | Loop / health alerting (see the section above) |
+
+## ❓ FAQ
+
+**Q: Huawei devices report "SSH session not active"?**
+Fixed — Cisco/Huawei use an interactive `invoke_shell()` channel.
+
+**Q: Network device output is truncated / paged?**
+The tool automatically sends the paging-off command: Cisco/Ruijie `terminal length 0`, Huawei/H3C `screen-length 0 temporary`.
+
+**Q: Old devices will not connect (`no acceptable host key` / algorithm mismatch)?**
+Old models only offer the `ssh-rsa` host key and sha1 kex. The tool already puts these algorithms back into the preference list at startup;
+**package/run with paramiko 3.5.x** (paramiko 4/5 removed the `ssh-rsa` implementation entirely, so putting it back into the preferences has no effect either).
+
+**Q: Batch inspection is slow?**
+Raise the concurrency to 5~10 (batch tab).
+
+**Q: Where did the reports / configurations go?**
+The program writes `profiles.json` / `presets.json` / `backups/` / `reports/` **next to the program (exe)** —
+when frozen into a single-file exe, `__file__` points at a temporary unpack directory, and early versions therefore wrote into `%TEMP%\_MEIxxxx` (lost on restart). Fixed.
+
+**Q: After running "A. Online two-round sampling" with no alerts, how do I tell "really no problem" from "never connected"?**
+Look at the **status bar** of the result page: it says "data: round 1 x/y devices with data; round 2 x/y devices with data" —
+if both rounds ran and both have data, the sampling itself was fine (no alerts = nothing changed between the two rounds, which is good).
+If one round shows `0 台有数据`, a popup lists the failure reasons directly (connection timeout / authentication failure / command not supported on that platform).
+The wording for a single-round snapshot and for the two-round diff is **separate**, so it can no longer mislead you by saying "single round" when you actually ran two.
+
+> Fix record (2026-09-17): early versions called the inspection tool's SSH helper **without the `client` argument**
+> (treating `_ssh_connect`, which connects in place and returns None, as if it returned a connection object), so **every device
+> failed to connect**, both rounds came back empty, and no matter how many rounds were run it said "a single round cannot show…". It now does:
+> `_create_ssh_client()` → `_ssh_connect(client, host, 22, user, pwd, timeout=…)` →
+> `_run_commands_via_shell(client, devtype, {标题: 命令})` (paging-off and legacy-algorithm fallback are both handled inside the latter).
+
+**Q: How do I change the anomaly thresholds?**
+Edit `ANOMALY_RULES` in `net_inspect_gui.py`; the ring alert thresholds live in `rules.yaml` (no repackaging needed).
+
+**Q: How do I rebuild the exe?**
+```bash
+# V5 (personal build)
+../.venv-build/Scripts/python -m PyInstaller --clean --noconfirm NetworkInspectionV5.spec
+# legacy (V3)
+pyinstaller --noconfirm NetworkInspectionV3.spec
+```
+Close the running exe first — a locked file makes packaging fail.
+
+## 📁 Project layout
+
+```
+network_A/
+├── net_inspect_gui.py          # V3 main program (trunk source)
+├── ring_panel.py               # ring alert tab (UI + online two-round sampling + offline analysis)
+├── ring_analyze.py             # orchestration layer: parse → run checks → aggregate/export
+├── ring_rules.py               # check engine (12 rules, pure functions, vendor-agnostic)
+├── ring_parsers.py             # parser layer: each vendor's command output → structured data
+├── rules.yaml                  # thresholds + log keywords (extend as you like)
+├── test_ring_rules.py          # regression tests for the check engine
+├── v5/                         # V5 personal build (self-contained: main program + the modules above + README)
+├── 启动巡检工具.bat             # source launcher script
+├── NetworkInspectionV3.spec    # packaging spec
+└── 环路检测-规则清单.md          # check specification (commands / thresholds / false-positive scenarios)
+```
 
 ---
 
-## 📄 许可与免责声明 · License & Disclaimer
+## 📄 License & Disclaimer
 
-Personal/educational tool. Use only on devices you are authorized to access —
+Personal/educational tool. Use it only on devices you are authorized to access —
 all inspection commands are read-only queries, but **do confirm authorization before running**.
+The licence is **MIT** (see [LICENSE](LICENSE)).
 
-本工具供个人 / 教学用途：请只在你**已获授权**的设备上使用；所有巡检命令都是只读查询，
-但**运行前请务必确认授权**。许可证为 **MIT**（见 [LICENSE](LICENSE)）。
-
-**第三方组件 · Third-party：** 运行依赖 `paramiko` / `openpyxl` / `PyYAML`（见 `pyproject.toml`），
-各自版权与许可归其作者所有；对设备执行的命令均为只读查询，工具不下发任何配置。
+**Third-party:** the runtime depends on `paramiko` / `openpyxl` / `PyYAML` (see `pyproject.toml`);
+their copyright and licences belong to their respective authors. Every command sent to a device is a read-only query — the tool pushes no configuration.
 
 ---
 
 <a id="开发与测试--development--tests"></a>
 
-## 🛠️ 开发与测试 · Development & Tests
+## 🛠️ Development & Tests
 
 ```bash
-# 安装（含开发依赖：pytest / ruff / openpyxl / PyYAML）
+# install (with dev dependencies: pytest / ruff / openpyxl / PyYAML)
 python -m pip install -e ".[dev]"
 
-# 跑测试（判据引擎 12 条规则、解析层、编排层两轮差分、v5 镜像一致性）
+# run the tests (12 check-engine rules, parser layer, two-round diff in the orchestration layer, v5 mirror consistency)
 python -m pytest -q
 
-# 静态检查
+# static checks
 ruff check .
 
-# 打包 exe（Windows；V5 需要在 v5/ 目录里执行）
+# build the exe (Windows; for V5 run it inside the v5/ directory)
 python -m PyInstaller --clean --noconfirm NetworkInspectionV3.spec
 cd v5 && python -m PyInstaller --clean --noconfirm NetworkInspectionV5.spec
 ```
 
-- 装好后也可用命令入口启动：`net-inspect`
-- ⚠️ **依赖必须锁 `paramiko>=3.5,<4`**：老设备只支持 `ssh-rsa`，paramiko 4/5 已移除该实现
-- 环路告警的阈值/关键字改 `rules.yaml`（不用重打包）；检测逻辑在 `ring_rules.py`
-- CI：`.github/workflows/ci.yml`（Windows 跑 pytest、Linux 跑 ruff）；
-  `.github/workflows/build.yml`（打 tag 或手动触发 → V3/V5 两个 exe artifact）
-- 版本号在 `pyproject.toml` 与 `net_inspect_gui.__version__` **两处**，必须保持一致
+- Once installed you can also start it via the console entry point: `net-inspect`
+- ⚠️ **The dependency must be pinned to `paramiko>=3.5,<4`**: old devices only support `ssh-rsa`, and paramiko 4/5 removed that implementation
+- Ring alert thresholds/keywords live in `rules.yaml` (no repackaging needed); the detection logic is in `ring_rules.py`
+- CI: `.github/workflows/ci.yml` (pytest on Windows, ruff on Linux);
+  `.github/workflows/build.yml` (push a tag or run it manually → V3/V5 exe artifacts)
+- The version number lives in **two places**, `pyproject.toml` and `net_inspect_gui.__version__`, and the two must stay in sync
 
 ---
 
 <div align="center">
-<sub>MIT License · © 2026 Yata-Datacom · Network Inspection Tool / 网络设备巡检工具</sub>
+<sub>MIT License · © 2026 Yata-Datacom · Network Inspection Tool</sub>
 </div>
