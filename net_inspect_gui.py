@@ -77,6 +77,39 @@ if getattr(sys, "frozen", False):
 else:
     SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROFILES_FILE = os.path.join(SCRIPT_DIR, "profiles.json")   # 连接信息文件 / saved connections
+
+
+# ═══════════════════════════════════════════════════════════
+# 密码混淆存储 / Password obfuscation for profiles.json
+# ═══════════════════════════════════════════════════════════
+# 说明：profiles.json 是明文 JSON，密码若直接落盘任何拿到文件的人都能读。
+# 这里用 XOR+base64 做混淆（本机可逆，防止「打开文件即见密码」）。
+# 注意：这不是加密——防不了刻意逆向，只挡 casually 翻文件的眼睛。
+# 格式：enc:<base64(xor(utf8(password), keystream))>；旧明文兼容读取后自动迁移。
+import base64 as _b64
+
+_OBF_KEY = ("NetworkInspection|" + (os.environ.get("COMPUTERNAME", "local"))
+            + "|" + os.path.basename(sys.argv[0] if sys.argv else "net")).encode("utf-8")
+
+def _obf_xor(data: bytes) -> bytes:
+    return bytes(b ^ _OBF_KEY[i % len(_OBF_KEY)] for i, b in enumerate(data))
+
+def encode_password(pwd: str) -> str:
+    """密码 → 'enc:<b64>'；空密码原样返回空串。"""
+    if not pwd:
+        return ""
+    return "enc:" + _b64.b64encode(_obf_xor(pwd.encode("utf-8"))).decode("ascii")
+
+def decode_password(stored: str) -> str:
+    """'enc:<b64>' → 明文；非 enc: 前缀视为旧明文原样返回（向后兼容）。"""
+    if not stored:
+        return ""
+    if not stored.startswith("enc:"):
+        return stored  # 旧版明文
+    try:
+        return _obf_xor(_b64.b64decode(stored[4:])).decode("utf-8")
+    except Exception:
+        return ""
 PRESETS_FILE  = os.path.join(SCRIPT_DIR, "presets.json")    # 巡检预设方案 / inspection presets
 BACKUP_DIR    = os.path.join(SCRIPT_DIR, "backups")          # 配置备份目录 / config backups
 REPORT_DIR   = os.path.join(SCRIPT_DIR, "reports")          # 报告导出目录 / exported reports
@@ -4131,6 +4164,15 @@ class NetworkInspectGUI:
 
         :return: 无。每次「增/改/删 Profile」后都应调用本方法落盘，再刷新界面。
         """
+        # 旧版本 profiles.json 里密码是明文；落盘前统一迁移为 enc: 混淆格式。
+        migrated = 0
+        for _p in self.profiles:
+            _pw = _p.get("password", "")
+            if _pw and not _pw.startswith("enc:"):
+                _p["password"] = encode_password(_pw)
+                migrated += 1
+        if migrated:
+            self._log(f"🔐 profiles.json 密码已迁移为混淆存储（{migrated} 条）")
         with open(PROFILES_FILE, "w", encoding="utf-8") as f:
             json.dump({"profiles": self.profiles}, f, indent=2, ensure_ascii=False)
 
@@ -4526,7 +4568,7 @@ class NetworkInspectGUI:
             self.single_host.delete(0, tk.END);  self.single_host.insert(0, p.get("host",""))
             self.single_port.delete(0, tk.END);  self.single_port.insert(0, str(p.get("port",22)))
             self.single_user.delete(0, tk.END);  self.single_user.insert(0, p.get("user",""))
-            self.single_pwd.delete(0, tk.END);   self.single_pwd.insert(0, p.get("password",""))
+            self.single_pwd.delete(0, tk.END);   self.single_pwd.insert(0, decode_password(p.get("password","")))
             devtype = p.get("devtype", "linux")
             self.single_devtype.set(DEVTYPE_LABEL_OF.get(devtype, "Linux Server"))
             self._load_commands_for_current_mode(devtype)
@@ -4891,7 +4933,7 @@ class NetworkInspectGUI:
                 self.prof_host.delete(0,tk.END);    self.prof_host.insert(0,p.get("host",""))
                 self.prof_port.delete(0,tk.END);    self.prof_port.insert(0,str(p.get("port",22)))
                 self.prof_user.delete(0,tk.END);    self.prof_user.insert(0,p.get("user",""))
-                self.prof_password.delete(0,tk.END);self.prof_password.insert(0,p.get("password",""))
+                self.prof_password.delete(0,tk.END);self.prof_password.insert(0,decode_password(p.get("password","")))
                 self.prof_type.set(DEVTYPE_LABEL_OF.get(p.get("devtype","linux"),"Linux Server"))
                 return
 
@@ -4920,7 +4962,7 @@ class NetworkInspectGUI:
         devtype = DEVTYPE_MAP.get(self.prof_type.get(),"linux")
         profile = {"name":name,"host":host,"port":port,
                    "user":self.prof_user.get().strip(),
-                   "password":self.prof_password.get(),"devtype":devtype}
+                   "password":encode_password(self.prof_password.get()),"devtype":devtype}
         for i,p in enumerate(self.profiles):
             if p.get("name") == name:
                 self.profiles[i] = profile; break
