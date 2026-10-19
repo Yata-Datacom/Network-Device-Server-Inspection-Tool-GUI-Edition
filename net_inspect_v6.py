@@ -12,13 +12,16 @@ A modern, NADT-style shell around the proven V5 inspection engine.
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 import tkinter as tk
 from pathlib import Path
-from tkinter import ttk
+from tkinter import filedialog, messagebox, ttk
 
-__version__ = "6.0.0"
+import netinspect_secrets as vault
+
+__version__ = "6.1.0"
 
 BASE_DIR = os.path.dirname(os.path.abspath(sys.executable if getattr(sys, "frozen", False) else __file__))
 V5_DIR = os.path.join(BASE_DIR, "v5")
@@ -142,6 +145,43 @@ class InspectionStudio(NetworkInspectGUI):
             setattr(base, name, value)
         os.makedirs(base.BACKUP_DIR, exist_ok=True)
         os.makedirs(base.REPORT_DIR, exist_ok=True)
+
+    # ── encrypted profiles (DPAPI) ─────────────────────────────────────
+    def _load_profiles(self) -> list:
+        path = base.PROFILES_FILE
+        if not os.path.exists(path):
+            return []
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                profiles = json.load(fh).get("profiles", [])
+        except (OSError, ValueError):
+            return []
+        migrate = False
+        for profile in profiles:
+            token = str(profile.get("password", ""))
+            if token and vault.protection_kind(token) == "raw":
+                migrate = True
+            profile["password"] = vault.unprotect(token)
+        if migrate:
+            self._write_profiles(profiles)
+        return profiles
+
+    def _save_profiles(self) -> None:
+        self._write_profiles(self.profiles)
+
+    def _write_profiles(self, profiles: list) -> None:
+        path = base.PROFILES_FILE
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        payload = []
+        for profile in profiles:
+            item = dict(profile)
+            item["password"] = vault.protect(str(item.get("password", "")))
+            payload.append(item)
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump({"profiles": payload}, fh, indent=2, ensure_ascii=False)
+            fh.write("\n")
+        os.replace(tmp, path)
 
     # ── top-level shell ────────────────────────────────────────────────
     def _setup_ui(self) -> None:
@@ -468,12 +508,14 @@ class InspectionStudio(NetworkInspectGUI):
             anchor="w", pady=(2, 10))
         actions = tk.Frame(inner, bg=PANEL)
         actions.pack(anchor="w")
-        for text, key, style in (("单机巡检", "single", "Accent.TButton"),
+        for text, key, style in (("一键巡检", "quick", "GreenAccent.TButton"),
+                                 ("单机巡检", "single", "Accent.TButton"),
                                  ("批量巡检", "batch", "TButton"),
                                  ("配置备份", "backup", "TButton"),
                                  ("环路告警", "ring", "TButton")):
             ttk.Button(actions, text=text, style=style,
-                       command=lambda k=key: self._show_page(k)).pack(
+                       command=(self.quick_inspect if key == "quick"
+                                else lambda k=key: self._show_page(k))).pack(
                 side=tk.LEFT, padx=(0, 8))
 
         stats = tk.Frame(body, bg=BG)
@@ -496,10 +538,17 @@ class InspectionStudio(NetworkInspectGUI):
         recent = tk.LabelFrame(lower, text="最近报告 / Recent reports",
                                padx=8, pady=8)
         recent.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 8))
+        rbar = tk.Frame(recent, bg=BG)
+        rbar.pack(fill=tk.X, pady=(0, 4))
+        ttk.Button(rbar, text="打开报告目录", style="TButton",
+                   command=lambda: self._open_dir(base.REPORT_DIR)).pack(side=tk.LEFT)
+        ttk.Button(rbar, text="刷新", style="TButton",
+                   command=self._refresh_dashboard).pack(side=tk.LEFT, padx=(4, 0))
         self.recent_list = tk.Listbox(recent, height=8, borderwidth=0,
                                       highlightthickness=1, highlightbackground=LINE,
                                       font=("Consolas", 8), activestyle="none")
         self.recent_list.pack(fill=tk.BOTH, expand=True)
+        self.recent_list.bind("<Double-1>", lambda _e: self._open_selected_report())
 
         flow = tk.LabelFrame(lower, text="推荐流程 / Workflow", padx=12, pady=12)
         flow.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
@@ -510,6 +559,50 @@ class InspectionStudio(NetworkInspectGUI):
             tk.Label(flow, text=text, bg=BG, fg=FG,
                      font=("Microsoft YaHei UI", 9), anchor="w").pack(
                 fill=tk.X, pady=3)
+
+    def _open_dir(self, path: str) -> None:
+        try:
+            os.makedirs(path, exist_ok=True)
+            os.startfile(path)
+        except OSError as exc:
+            messagebox.showerror("打开失败", str(exc))
+
+    def _open_selected_report(self) -> None:
+        selection = self.recent_list.curselection()
+        if not selection:
+            return
+        name = self.recent_list.get(selection[0])
+        if not name or name.startswith("（"):
+            return
+        target = Path(base.REPORT_DIR) / name
+        if target.is_file():
+            try:
+                os.startfile(str(target))
+            except OSError as exc:
+                messagebox.showerror("打开失败", str(exc))
+
+    def quick_inspect(self) -> None:
+        """One-click batch inspection for the current device list."""
+        path = self.batch_filepath.get().strip()
+        if not path or not os.path.exists(path):
+            path = filedialog.askopenfilename(
+                title="选择设备清单（CSV / Excel / txt）",
+                filetypes=[("设备清单", "*.txt *.csv *.xlsx *.xlsm"), ("所有文件", "*.*")])
+            if not path:
+                return
+            self.batch_filepath.set(path)
+        try:
+            self._load_devices()
+        except Exception as exc:
+            messagebox.showerror("加载失败", str(exc))
+            return
+        children = self.device_tree.get_children()
+        if not children:
+            messagebox.showwarning("没有设备", "设备清单为空或解析失败。")
+            return
+        self.device_tree.selection_set(children)
+        self._show_page("batch")
+        self._start_batch_selected()
 
     def _refresh_dashboard(self) -> None:
         reports = []

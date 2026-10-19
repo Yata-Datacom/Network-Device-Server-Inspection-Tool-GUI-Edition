@@ -28,7 +28,7 @@
 
 **⬇️ Download:** [Releases](https://github.com/Yata-Datacom/Network-Device-Server-Inspection-Tool-GUI-Edition/releases) — single-file Windows exe, no install needed, no Python required.
 
-**v6.0.0** · [CHANGELOG](CHANGELOG.md) · [User guide](docs/USER_GUIDE.md) · [Development & Tests](#开发与测试--development--tests)
+**v6.1.0** · [CHANGELOG](CHANGELOG.md) · [User guide](docs/USER_GUIDE.md) · [Development & Tests](#开发与测试--development--tests)
 
 ### 📖 Documentation
 
@@ -89,8 +89,11 @@ Alerts involved: 4 (D13×1, D4×1, D7×2)
 
 ---
 
-## 🆕 What's new in 6.0
+## 🆕 What's new in 6.1
 
+- **Credential vault**: profile passwords are encrypted with Windows DPAPI (current user), not stored in clear text.
+- **One-click inspection**: load the device list and start a full batch inspection from the Overview page.
+- **Report center**: recent reports are listed on the dashboard; double-click to open, or open the report folder.
 - **Studio shell**: navy header, left workspace rail, page headers and an Overview dashboard.
 - **One workspace per task** instead of eight flat tabs; `Ctrl+1…9` switches pages.
 - **Chinese navigation** and translated common controls, while the proven V5 engine is unchanged.

@@ -28,7 +28,7 @@
 
 **⬇️ 下载：** [Releases](https://github.com/Yata-Datacom/Network-Device-Server-Inspection-Tool-GUI-Edition/releases) —— Windows 单文件 exe，免安装、无需 Python。
 
-**v6.0.0** · [CHANGELOG](CHANGELOG.md) · [使用指南](docs/USER_GUIDE.zh-CN.md) · [开发与测试](#开发与测试--development--tests)
+**v6.1.0** · [CHANGELOG](CHANGELOG.md) · [使用指南](docs/USER_GUIDE.zh-CN.md) · [开发与测试](#开发与测试--development--tests)
 
 ### 📖 文档
 
@@ -89,8 +89,11 @@ Ring Alert 页签的结果**默认显示「故障视图」**：不再是上百�
 
 ---
 
-## 🆕 6.0 新变化
+## 🆕 6.1 新变化
 
+- **凭据保险箱**：连接档案口令使用 Windows DPAPI（当前用户）加密保存，不再明文落盘。
+- **一键巡检**：在总览页加载设备清单后，直接启动全量批量巡检。
+- **报告中心**：总览列出最近报告，双击打开，或一键打开报告目录。
 - **Studio 外壳**：深蓝顶栏、左侧工作区导航、页面标题条和总览仪表板。
 - **按任务拆分工作区**，不再是一排 8 个扁平页签；`Ctrl+1…9` 切换。
 - **中文导航**和常用控件翻译，底层继续复用 V5 引擎。

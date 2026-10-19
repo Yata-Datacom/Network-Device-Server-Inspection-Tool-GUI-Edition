@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "network-inspection-tool"
-version = "6.0.0"
+version = "6.1.0"
 description = "SSH-based network inspection studio (Huawei/H3C/Ruijie/Cisco/Linux) with loop & hardware-health alerting"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -37,8 +37,8 @@ dev = ["pytest>=8", "ruff>=0.6", "openpyxl>=3.1", "PyYAML>=6"]
 net-inspect = "net_inspect_v6:main"
 
 [tool.setuptools]
-py-modules = ["net_inspect", "net_inspect_gui", "net_inspect_v6", "ring_rules", "ring_parsers",
-              "ring_analyze", "ring_panel"]
+py-modules = ["net_inspect", "net_inspect_gui", "net_inspect_v6", "netinspect_secrets",
+              "ring_rules", "ring_parsers", "ring_analyze", "ring_panel"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

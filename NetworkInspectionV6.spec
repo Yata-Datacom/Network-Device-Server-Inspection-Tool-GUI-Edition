@@ -1,5 +1,5 @@
 # -*- mode: python ; coding: utf-8 -*-
-# Network Inspection Studio 6.0 — NADT-style V6 shell over the V5 engine
+# Network Inspection Studio 6.1 — NADT-style V6 shell over the V5 engine
 
 a = Analysis(
     ['net_inspect_v6.py'],
@@ -7,7 +7,7 @@ a = Analysis(
     binaries=[],
     datas=[('rules.yaml', '.')],
     hiddenimports=[
-        'net_inspect_gui_v5',
+        'net_inspect_gui_v5', 'netinspect_secrets',
         'ring_panel', 'ring_rules', 'ring_parsers', 'ring_analyze', 'ring_events',
     ],
     hookspath=[],
@@ -25,7 +25,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name='Network Inspection Studio 6.0',
+    name='Network Inspection Studio 6.1',
     icon='app_icon.ico',
     debug=False,
     bootloader_ignore_signals=False,

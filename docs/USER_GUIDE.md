@@ -1,6 +1,6 @@
-# Network Inspection Studio 6.0 — User Guide
+# Network Inspection Studio 6.1 — User Guide
 
-> Applies to **v6.0.0**. The UI mixes Chinese navigation with the proven V5 inspection panels.
+> Applies to **v6.1.0**. The UI mixes Chinese navigation with the proven V5 inspection panels.
 > All examples use synthetic documentation addresses (`192.0.2.0/24`, `198.51.100.0/24`) and fake MACs.
 
 > **Privacy:** do not commit real device lists, `profiles.json`, screenshots or exported reports to a
@@ -8,10 +8,11 @@
 
 ---
 
-## 1. What changed in 6.0
+## 1. What changed in 6.1
 
-V6 is a **UI/architecture refresh** around the V5 engine:
-
+- **Credential vault**: profile passwords are encrypted with Windows DPAPI; old plaintext entries are migrated.
+- **One-click inspection**: start a full batch inspection from the Overview page.
+- **Report center**: open recent reports by double-click or open the report folder.
 - dark navy header, left workspace rail and page headers
 - one workspace per task (no more eight flat tabs)
 - an Overview dashboard with profiles, reports, backups and presets
@@ -50,7 +51,7 @@ Legacy: `python net_inspect_gui_v5.py` or `python net_inspect_gui.py` still star
 
 | Workspace | Purpose |
 | :-- | :-- |
-| 总览 Overview | counts, quick actions, recent reports |
+| 总览 Overview | counts, one-click inspection, report center |
 | 单机巡检 Single | one device, editable command set |
 | 批量巡检 Batch | parallel inspection, anomaly marking, CSV/HTML/Excel export |
 | 配置备份 Backup | batch `running-config` / `current-configuration` backup |
@@ -87,8 +88,9 @@ Recommended columns: IP / username / password / type / commands. It is read with
 
 ### 4.3 Profiles
 
-The **连接档案** workspace stores named connections and command presets. Passwords are written through the
-legacy obfuscation path; treat `profiles.json` as a secret file and never commit it.
+The **连接档案** workspace stores named connections and command presets. Profile passwords are encrypted with
+**Windows DPAPI (current user)** before `profiles.json` is written; old plaintext entries are migrated on first
+load. Treat `profiles.json` as a secret file and never commit it.
 
 ---
 
@@ -221,7 +223,7 @@ MAC conflicts.
 
 | Version | Entry | Role |
 | :-- | :-- | :-- |
-| V6.0.0 | `net_inspect_v6.py` | Studio shell + V5 engine |
+| V6.1.0 | `net_inspect_v6.py` | Studio shell + V5 engine |
 | V5.2.2 | `v5/net_inspect_gui_v5.py` | Legacy V5 UI |
 | V3 | `net_inspect_gui.py` | Legacy basic UI |
 
