@@ -62,7 +62,7 @@ Legacy: `python net_inspect_gui_v5.py` or `python net_inspect_gui.py` still star
 | 环路告警 Ring | two-round sampling diff, fault view, optical/temperature/power alerts |
 | 连接档案 Profiles | saved connections and command presets |
 
-Keyboard: `Ctrl+1…9` switches workspace, `Esc` stops, `Ctrl+Enter` starts the current single/batch/backup page.
+Keyboard: `Ctrl+1…9 / 0` switches workspace, `Esc` stops, `Ctrl+Enter` starts the current single/batch/backup page.
 
 ![Overview](../assets/studio-v6-dashboard.png)
 

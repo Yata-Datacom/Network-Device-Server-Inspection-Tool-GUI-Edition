@@ -62,7 +62,7 @@ net-inspect
 | 环路告警 Ring | 两轮采样差分、故障视图、光衰/温度/电源 |
 | 连接档案 Profiles | 连接档案与命令预设 |
 
-快捷键：`Ctrl+1…9` 切换工作区，`Esc` 停止，`Ctrl+Enter` 启动当前单机/批量/备份页。
+快捷键：`Ctrl+1…9 / 0` 切换工作区，`Esc` 停止，`Ctrl+Enter` 启动当前单机/批量/备份页。
 
 ![总览](../assets/studio-v6-dashboard.png)
 
