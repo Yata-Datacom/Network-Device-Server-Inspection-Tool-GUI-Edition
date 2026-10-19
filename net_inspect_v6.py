@@ -21,7 +21,7 @@ from tkinter import filedialog, messagebox, ttk
 
 import netinspect_secrets as vault
 
-__version__ = "6.1.0"
+__version__ = "6.2.0"
 
 BASE_DIR = os.path.dirname(os.path.abspath(sys.executable if getattr(sys, "frozen", False) else __file__))
 V5_DIR = os.path.join(BASE_DIR, "v5")
@@ -58,6 +58,7 @@ NAV_ITEMS = [
     ("single", "单机巡检", "Single host", "巡检"),
     ("batch", "批量巡检", "Batch", "巡检"),
     ("backup", "配置备份", "Backup", "巡检"),
+    ("testing", "测试中心", "Tests", "诊断"),
     ("traffic", "流量测试", "Traffic", "诊断"),
     ("security", "安全核查", "Security", "诊断"),
     ("active", "主动探测", "Probes", "诊断"),
@@ -127,6 +128,7 @@ class InspectionStudio(NetworkInspectGUI):
     """V6 UI shell. All inspection work is delegated to the V5 engine."""
 
     def __init__(self, root: tk.Tk):
+        self.base_dir = BASE_DIR
         self._prepare_data_dirs()
         super().__init__(root)
         self.root.title(f"Network Inspection Studio {__version__} — 网络巡检工作台")
@@ -204,10 +206,10 @@ class InspectionStudio(NetworkInspectGUI):
         self._build_pages()
         self._translate_widgets(self.content)
         for idx, key in enumerate(("dashboard", "single", "batch", "backup",
-                                   "traffic", "security", "active", "ring",
-                                   "profiles"), 1):
+                                   "testing", "traffic", "security", "active", "ring"), 1):
             self.root.bind_all(f"<Control-Key-{idx}>",
                                lambda _e, k=key: self._show_page(k))
+        self.root.bind_all("<Control-Key-0>", lambda _e: self._show_page("profiles"))
 
     def _build_header(self) -> None:
         header = tk.Frame(self.root, bg=NAVY, height=66)
@@ -279,7 +281,7 @@ class InspectionStudio(NetworkInspectGUI):
         tk.Label(bar, textvariable=self.status_var, bg=PANEL, fg=FG,
                  font=("Microsoft YaHei UI", 9), anchor="w").pack(
             side=tk.LEFT, fill=tk.X, expand=True)
-        tk.Label(bar, text="Ctrl+1…9 切换  ·  Esc 停止  ·  Ctrl+Enter 启动当前页",
+        tk.Label(bar, text="Ctrl+1…9 / 0 切换  ·  Esc 停止  ·  Ctrl+Enter 启动当前页",
                  bg=PANEL, fg=MUTED, font=("Microsoft YaHei UI", 8),
                  padx=12).pack(side=tk.RIGHT)
 
@@ -308,7 +310,7 @@ class InspectionStudio(NetworkInspectGUI):
 
     def _build_pages(self) -> None:
         dash = self._page("dashboard", "总览", "巡检工作台 · 设备、报告与快速入口",
-                          "Ctrl+1…9 切换  ·  Esc 停止")
+                          "Ctrl+1…9 / 0 切换  ·  Esc 停止")
         self._build_dashboard(dash)
 
         body = self._page("single", "单机巡检", "连接单台设备，执行可编辑命令集",
@@ -325,6 +327,12 @@ class InspectionStudio(NetworkInspectGUI):
                           "输出到 backups/")
         self.tab_backup = body
         self._build_backup_tab()
+
+        body = self._page("testing", "测试中心", "连通性测试 · 配置基线 · 上线前自检",
+                          "ICMP / TCP 22 / SSH / 配置基线")
+        from netinspect_tests import TestCenter
+        self.tab_testing = TestCenter(body, self)
+        self.tab_testing.pack(fill=tk.BOTH, expand=True)
 
         body = self._page("traffic", "流量测试", "UDP / ICMP / TCP / TCP-SYN 与接收端",
                           "V5 engine")
@@ -512,6 +520,7 @@ class InspectionStudio(NetworkInspectGUI):
                                  ("单机巡检", "single", "Accent.TButton"),
                                  ("批量巡检", "batch", "TButton"),
                                  ("配置备份", "backup", "TButton"),
+                                 ("测试中心", "testing", "TButton"),
                                  ("环路告警", "ring", "TButton")):
             ttk.Button(actions, text=text, style=style,
                        command=(self.quick_inspect if key == "quick"

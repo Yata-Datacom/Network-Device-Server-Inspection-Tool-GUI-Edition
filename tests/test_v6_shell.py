@@ -11,8 +11,8 @@ def test_v6_shell_pages():
     root.withdraw()
     try:
         app = net_inspect_v6.InspectionStudio(root)
-        expected = {"dashboard", "single", "batch", "backup", "traffic",
-                    "security", "active", "ring", "profiles"}
+        expected = {"dashboard", "single", "batch", "backup", "testing",
+                    "traffic", "security", "active", "ring", "profiles"}
         assert set(app.pages) == expected
         assert app.current_page == "dashboard"
         app._show_page("ring")

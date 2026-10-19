@@ -1,6 +1,6 @@
 # Network Inspection Studio 6.1 — User Guide
 
-> Applies to **v6.1.0**. The UI mixes Chinese navigation with the proven V5 inspection panels.
+> Applies to **v6.2.0**. The UI mixes Chinese navigation with the proven V5 inspection panels.
 > All examples use synthetic documentation addresses (`192.0.2.0/24`, `198.51.100.0/24`) and fake MACs.
 
 > **Privacy:** do not commit real device lists, `profiles.json`, screenshots or exported reports to a
@@ -55,6 +55,7 @@ Legacy: `python net_inspect_gui_v5.py` or `python net_inspect_gui.py` still star
 | 单机巡检 Single | one device, editable command set |
 | 批量巡检 Batch | parallel inspection, anomaly marking, CSV/HTML/Excel export |
 | 配置备份 Backup | batch `running-config` / `current-configuration` backup |
+| 测试中心 Tests | ICMP + TCP 22 + SSH login + optional smoke command; configuration baseline diff |
 | 流量测试 Traffic | UDP / ICMP / TCP / TCP-SYN generator and TCP receiver |
 | 安全核查 Security | read-only DHCP snooping / DAI / DNS / port isolation / port security checks |
 | 主动探测 Probes | ICMP / DNS / DHCP / ARP / VLAN probes |
@@ -129,6 +130,31 @@ Use **IP 情报** on a host for a quick intelligence summary.
 Backup runs in a worker thread; **停止** sends the shared stop event.
 
 ---
+
+## 7.5 Test center
+
+![Test center](../assets/studio-v6-tests.png)
+
+Two test modes share the loaded device list:
+
+### Connectivity test
+
+1. Load `devices.txt` / `devices.xlsx`.
+2. Choose whether to run a smoke command after SSH login (`display version` / `show version` / `uname -a`).
+3. Click **开始测试**.
+4. The table reports ICMP, TCP 22, SSH login, elapsed time and a short evidence line.
+5. Export the result as CSV to `reports/`.
+
+This is intentionally lightweight: it verifies reachability and credentials before a full inspection.
+
+### Configuration baseline
+
+1. Load the device list and click **检查配置变更**.
+2. The tool reads the running config and compares it with `baselines/<host>.cfg`.
+3. Results: `新基线`, `一致`, `已变更` (with added/deleted line counts), `失败`.
+4. Click **保存为基线** to accept the current configurations as the new baseline.
+
+`baselines/` is ignored by Git. Treat it as sensitive: it contains full device configurations.
 
 ## 8. Traffic test
 
@@ -223,7 +249,7 @@ MAC conflicts.
 
 | Version | Entry | Role |
 | :-- | :-- | :-- |
-| V6.1.0 | `net_inspect_v6.py` | Studio shell + V5 engine |
+| V6.2.0 | `net_inspect_v6.py` | Studio shell + V5 engine |
 | V5.2.2 | `v5/net_inspect_gui_v5.py` | Legacy V5 UI |
 | V3 | `net_inspect_gui.py` | Legacy basic UI |
 

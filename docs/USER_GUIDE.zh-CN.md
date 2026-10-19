@@ -1,6 +1,6 @@
 # Network Inspection Studio 6.1 使用指南
 
-> 适用于 **v6.1.0**。界面为中文导航 + V5 巡检面板；示例使用文档地址
+> 适用于 **v6.2.0**。界面为中文导航 + V5 巡检面板；示例使用文档地址
 > `192.0.2.0/24`、`198.51.100.0/24` 和虚构 MAC。
 
 > **隐私提醒：** 不要把真实设备清单、`profiles.json`、截图或导出报告提交到公开仓库。
@@ -55,6 +55,7 @@ net-inspect
 | 单机巡检 Single | 单台设备，命令集可编辑 |
 | 批量巡检 Batch | 并行巡检、异常标红、CSV/HTML/Excel 导出 |
 | 配置备份 Backup | 批量备份 `running-config` / `current-configuration` |
+| 测试中心 Tests | ICMP + TCP 22 + SSH 登录 + 可选冒烟命令；配置基线差异 |
 | 流量测试 Traffic | UDP / ICMP / TCP / TCP-SYN 与内置 TCP 接收端 |
 | 安全核查 Security | 只读 DHCP snooping / DAI / DNS / 端口隔离 / 端口安全 |
 | 主动探测 Probes | ICMP / DNS / DHCP / ARP / VLAN 探测 |
@@ -127,6 +128,31 @@ net-inspect
 备份在工作线程执行；**停止** 会发送共享停止事件。
 
 ---
+
+## 7.5 测试中心
+
+![测试中心](../assets/studio-v6-tests.png)
+
+两种测试共用已加载的设备清单：
+
+### 连通性测试
+
+1. 加载 `devices.txt` / `devices.xlsx`。
+2. 选择是否在 SSH 登录后执行冒烟命令（`display version` / `show version` / `uname -a`）。
+3. 点 **开始测试**。
+4. 表格显示 ICMP、TCP 22、SSH 登录、耗时和一行证据。
+5. 结果可导出 CSV 到 `reports/`。
+
+它刻意保持轻量：在完整巡检前先确认可达性和凭据。
+
+### 配置基线
+
+1. 加载设备清单，点 **检查配置变更**。
+2. 读取当前配置，与 `baselines/<host>.cfg` 对比。
+3. 结果：`新基线`、`一致`、`已变更`（含新增/删除行数）、`失败`。
+4. 点 **保存为基线** 接受当前配置为新基线。
+
+`baselines/` 已被 Git 忽略。它包含完整设备配置，请按敏感数据处理。
 
 ## 8. 流量测试
 
@@ -219,7 +245,7 @@ BPDU 自环、光模块收光、温度、电源、跨设备 MAC 冲突。
 
 | 版本 | 入口 | 角色 |
 | :-- | :-- | :-- |
-| V6.1.0 | `net_inspect_v6.py` | Studio 外壳 + V5 引擎 |
+| V6.2.0 | `net_inspect_v6.py` | Studio 外壳 + V5 引擎 |
 | V5.2.2 | `v5/net_inspect_gui_v5.py` | V5 legacy 界面 |
 | V3 | `net_inspect_gui.py` | V3 基础界面 |
 
