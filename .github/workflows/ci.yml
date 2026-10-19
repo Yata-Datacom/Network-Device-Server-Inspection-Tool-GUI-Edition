@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: pytest (windows-latest)
+    # 本工具是 Windows 图形程序（Tkinter），测试跑在 Windows 上
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+      - name: Run tests
+        run: python -m pytest -q
+
+  lint:
+    name: ruff (ubuntu-latest)
+    # 纯静态检查，不需要 Tkinter，放 Linux 上跑更便宜
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: python -m pip install ruff
+      - run: ruff check .

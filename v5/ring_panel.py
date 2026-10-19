@@ -1,0 +1,987 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+ring_panel.py —— 「环路告警」页签（巡检工具的新页签，V4/V5 共用）
+
+这个页签把「环路 / 异常告警」功能接进巡检工具，提供两种用法：
+
+A. **在线两轮采样**（主力）：自己连设备，同一批命令跑两轮（默认间隔 30 分钟），
+   两轮结果做差分 → 判 MAC 漂移 / CRC 增长 / 广播速率 / 链路震荡 / TC 增量。
+   * 环路与"正在恶化"的硬件问题，**必须看变化量**，单看一次快照看不出；
+   * 间隔是第一命门：程序按实际耗时记录，界面上也会显示（不是配置值）。
+
+B. **离线分析报告**：拿巡检工具导出的报告 CSV（1 份或 2 份）直接分析，
+   适合"同事只拿到报告"或事后复盘。
+
+设计要点
+--------
+* **能力自适应**：检测项勾选框由 `ring_analyze.available_rules()` 动态生成 ——
+  阉割版（V4）的 `ring_rules.py` 里没有 D8/D9，界面自然就少两项，**界面代码不分叉**。
+* **不依赖宿主 GUI 的内部实现**：设备文件解析 / SSH 执行都内置一份兜底，
+  有 `app._parse_device_file` / `app._ssh_connect` / `app._run_commands_via_shell`
+  时优先用宿主的（保持与巡检工具一致的行为和友好报错）。
+* **线程模型**：worker 线程只算，经 `queue` 回主线程渲染（与巡检工具同一套路）。
+* 解析失败/命令不支持**不误报**：记进「检测能力提示」，照实告诉用户缺什么。
+
+用法（宿主 GUI 里挂页签）::
+
+    from ring_panel import RingAlertPanel
+    self.tab_ring = RingAlertPanel(notebook, self)
+    notebook.add(self.tab_ring, text="Ring Alert")
+"""
+
+from __future__ import annotations
+
+import os
+import queue
+import threading
+import tkinter as tk
+from tkinter import filedialog, messagebox, ttk
+from tkinter.scrolledtext import ScrolledText
+
+import ring_analyze as RA
+
+try:
+    import ring_events as RE      # 故障事件层（人话故障卡）
+except Exception:
+    RE = None
+import ring_parsers as RP
+
+# ── 各厂商的"环路/健康"命令集（按《环路检测-规则清单》§1）────────────────
+# 说明：解析器目前只完整实现华为；其他厂商的命令可以先跑起来（结果会被记入
+# "检测能力提示"），等拿到真实输出再补解析（见 README 的扩展说明）。
+RING_COMMANDS = {
+    "huawei": [
+        "display stp", "display stp brief", "display mac-address",
+        "display interface brief", "display interface",
+        "display device", "display logbuffer", "display alarm active",
+        "display transceiver diagnosis interface", "display temperature all",
+    ],
+    "h3c": [
+        "display stp", "display mac-address", "display interface brief",
+        "display interface", "display device", "display logbuffer",
+        "display alarm", "display transceiver diagnosis interface",
+    ],
+    "ruijie": [
+        "show spanning-tree", "show mac-address-table", "show interfaces status",
+        "show interfaces", "show version", "show logging", "show transceiver",
+    ],
+    "cisco": [
+        "show spanning-tree", "show mac address-table", "show interfaces status",
+        "show interfaces", "show inventory", "show logging", "show environment",
+    ],
+    "linux": [],
+}
+
+SEV_TAG = {"high": "ring_high", "medium": "ring_med", "low": "ring_low"}
+
+
+# ══════════════════════════════════════════════════════════════════
+# 瞬时故障判定与友好提示（连接层重试用）
+# ══════════════════════════════════════════════════════════════════
+_TRANSIENT_HINTS = (
+    "unable to open channel", "channel closed", "connection reset", "connection aborted",
+    "broken pipe", "no existing session", "socket is closed", "server connection dropped",
+    "eof", "timed out", "timeout", "winerror 10053", "winerror 10054", "nonexisting session",
+)
+
+
+def _looks_transient(err: BaseException) -> bool:
+    """判断是否为“重试一次大概率就好”的瞬时故障（通道被拒/被掐/超时）。"""
+    s = f"{type(err).__name__}: {err}".lower()
+    return any(h in s for h in _TRANSIENT_HINTS)
+
+
+def _friendly_session_error(msg: str) -> str:
+    """把底层异常文本翻译成“知道下一步做什么”的中文提示。"""
+    low = (msg or "").lower()
+    if "unable to open channel" in low:
+        return ("设备拒绝新建会话通道（密码是对的，不是认证问题）—— 设备侧登录会话被占满。"
+                "常见原因：① 同时开了另一个巡检实例/工具在连同一台设备；② 上一轮连接还没释放；"
+                "③ 设备 VTY 上限（华为常见 10 个）被其他登录占用。"
+                "本工具已自动重试一次；仍失败请等 30 秒再跑，并确认只开了一个巡检工具。")
+    if "authentication" in low or "auth fail" in low:
+        return "认证失败：这台设备的用户名或密码不对（请核对该行账号密码）。"
+    if "timed out" in low or "timeout" in low:
+        return ("连接超时：设备没有及时响应（多半不是密码问题）。确认设备在线、SSH 已开启"
+                "（华为：stelnet server enable），或管理面繁忙/被限速。")
+    if "refused" in low:
+        return "端口被拒绝：目标 22 端口没开（华为需先 ssh server enable / stelnet server enable）。"
+    return msg
+
+
+class RingAlertPanel(ttk.Frame):
+    """环路告警页签。构造参数 `app` 为宿主 GUI（可为 None，此时用内置兜底实现）。"""
+
+    def __init__(self, parent, app=None, **kw) -> None:
+        super().__init__(parent, **kw)
+        self.app = app
+        self.result: dict | None = None
+        self._alerts: list[dict] = []
+        self._q: "queue.Queue[tuple]" = queue.Queue()
+        self._stop = threading.Event()
+        self._busy = False
+        self._last_export_dir: str | None = None
+        self._rules = RP.load_rules()
+        self._rules_meta = RA.available_rules()
+        self._run_warnings: list[str] = []
+        self._health: dict = {}      # 本轮的过程提示/失败记录（供结果弹窗诊断）
+        self._build()
+        self.after(150, self._poll)
+
+    # ══════════════════════════════════════════════════════════════
+    # 界面
+    # ══════════════════════════════════════════════════════════════
+
+    def _build(self) -> None:
+        # ── A. 在线两轮采样 ──────────────────────────────────────
+        on = ttk.LabelFrame(self, text="A. 在线两轮采样（工具自己连设备跑两轮，做差分）", padding=10)
+        on.pack(fill=tk.X, padx=10, pady=(10, 6))
+
+        ttk.Label(on, text="设备文件：").grid(row=0, column=0, sticky="e")
+        self.dev_var = tk.StringVar(value="")
+        ttk.Entry(on, textvariable=self.dev_var).grid(row=0, column=1, columnspan=3,
+                                                     sticky="ew", pady=3)
+        ttk.Button(on, text="浏览…", width=9, command=self._pick_devices).grid(row=0, column=4, padx=5)
+        ttk.Label(on, text="（支持 txt / xlsx；留空则用巡检工具批量页当前的设备文件）",
+                  foreground="#8a97a5").grid(row=0, column=5, sticky="w")
+
+        ttk.Label(on, text="两轮间隔(分钟)：").grid(row=1, column=0, sticky="e")
+        self.gap_var = tk.StringVar(value="1")
+        ttk.Entry(on, textvariable=self.gap_var, width=8).grid(row=1, column=1, sticky="w")
+        ttk.Label(on, text="并发设备数：").grid(row=1, column=2, sticky="e", padx=(12, 0))
+        self.workers_var = tk.StringVar(value="8")
+        ttk.Entry(on, textvariable=self.workers_var, width=6).grid(row=1, column=3, sticky="w")
+        ttk.Label(on, text="建议 15~60 分钟；间隔越长越能看出缓慢劣化，但排查要等",
+                  foreground="#8a97a5").grid(row=1, column=4, columnspan=2, sticky="w", padx=6)
+
+        ttk.Label(on, text="采样命令：").grid(row=2, column=0, sticky="ne", pady=(6, 0))
+        self.cmd_text = ScrolledText(on, height=6, font=("Consolas", 9))
+        self.cmd_text.grid(row=2, column=1, columnspan=5, sticky="ew", pady=(6, 0))
+        self._load_default_commands()
+
+        rowb = ttk.Frame(on)
+        rowb.grid(row=3, column=0, columnspan=6, sticky="w", pady=(8, 0))
+        self.btn_run2 = ttk.Button(rowb, text="开始两轮采样分析", style="Accent.TButton",
+                                   command=self._start_online)
+        self.btn_run2.pack(side=tk.LEFT)
+        self.btn_stop2 = ttk.Button(rowb, text="停止", style="Danger.TButton",
+                                    command=self._stop_work, state=tk.DISABLED)
+        self.btn_stop2.pack(side=tk.LEFT, padx=5)
+        ttk.Button(rowb, text="恢复默认命令", command=self._load_default_commands).pack(side=tk.LEFT, padx=8)
+        on.columnconfigure(1, weight=1)
+
+        # ── B. 离线分析 ──────────────────────────────────────────
+        off = ttk.LabelFrame(self, text="B. 离线分析报告（拿巡检导出的 CSV 分析，适合事后复盘）", padding=10)
+        off.pack(fill=tk.X, padx=10, pady=(0, 6))
+        self.r1_var, self.r2_var = tk.StringVar(), tk.StringVar()
+        ttk.Label(off, text="第 1 期报告：").grid(row=0, column=0, sticky="e")
+        ttk.Entry(off, textvariable=self.r1_var).grid(row=0, column=1, sticky="ew", pady=2)
+        ttk.Button(off, text="浏览…", width=9,
+                   command=lambda: self._pick_report(self.r1_var)).grid(row=0, column=2, padx=5)
+        ttk.Label(off, text="第 2 期报告：").grid(row=1, column=0, sticky="e")
+        ttk.Entry(off, textvariable=self.r2_var).grid(row=1, column=1, sticky="ew", pady=2)
+        ttk.Button(off, text="浏览…", width=9,
+                   command=lambda: self._pick_report(self.r2_var)).grid(row=1, column=2, padx=5)
+        rb = ttk.Frame(off)
+        rb.grid(row=2, column=0, columnspan=3, sticky="w", pady=(6, 0))
+        self.btn_run_off = ttk.Button(rb, text="分析这两份报告", command=self._start_offline)
+        self.btn_run_off.pack(side=tk.LEFT)
+        ttk.Label(rb, text="（只给第 1 期也行：出关键字/绝对值类结果，看不出“正在变化”）",
+                  foreground="#8a97a5").pack(side=tk.LEFT, padx=6)
+        off.columnconfigure(1, weight=1)
+
+        # ── 检测项 ──────────────────────────────────────────────
+        rl = ttk.LabelFrame(self, text="检测项（改完 rules.yaml 可点下面「重新加载规则」生效）", padding=8)
+        rl.pack(fill=tk.X, padx=10, pady=(0, 6))
+        self.rule_vars: dict[str, tk.BooleanVar] = {}
+        defaults = set(RA.default_enabled(self._rules_meta))
+        base_ids = [r for r, c in self._rules_meta.items() if c.get("scope") == "single"]
+        deep_ids = [r for r, c in self._rules_meta.items() if c.get("scope") == "cross"]
+        for col, (title, ids) in enumerate((("基础检测", base_ids), ("深度检测（完整版独有）", deep_ids))):
+            f = ttk.LabelFrame(rl, text=title, padding=5)
+            f.grid(row=0, column=col, sticky="nw", padx=(0, 12))
+            if not ids:
+                ttk.Label(f, text="（本版本不含）", foreground="#8a97a5").grid(row=0, column=0)
+            for i, rid in enumerate(ids):
+                v = tk.BooleanVar(value=rid in defaults)
+                self.rule_vars[rid] = v
+                ttk.Checkbutton(f, text=f"{rid} {self._rules_meta[rid].get('name', '')}",
+                                variable=v).grid(row=i // 2, column=i % 2, sticky="w", padx=(0, 12))
+        ttk.Label(rl, text="设备角色档：").grid(row=1, column=0, sticky="e", pady=(6, 0))
+        self.cls_var = tk.StringVar(value="aggregation")
+        ttk.Combobox(rl, textvariable=self.cls_var, width=13, state="readonly",
+                     values=["core", "aggregation", "access"]).grid(row=1, column=1, sticky="w")
+        ttk.Button(rl, text="打开规则表", command=self._open_rules).grid(row=1, column=2, padx=6)
+        ttk.Button(rl, text="重新加载规则", command=self._reload_rules).grid(row=1, column=3)
+
+        # ── 结果 ────────────────────────────────────────────────
+        res = ttk.LabelFrame(self, text="告警列表（双击看完整证据）", padding=8)
+        res.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 6))
+        fb = ttk.Frame(res)
+        fb.pack(fill=tk.X, pady=(0, 6))
+        self.summary_var = tk.StringVar(value="尚未分析")
+        ttk.Label(fb, textvariable=self.summary_var, foreground="#1f4e79",
+                  font=("Microsoft YaHei UI", 9, "bold")).pack(side=tk.LEFT)
+        ttk.Button(fb, text="⚠ 上一异常", width=11, command=lambda: self._jump(-1)).pack(side=tk.RIGHT, padx=(4, 0))
+        ttk.Button(fb, text="⚠ 下一异常", width=11, command=lambda: self._jump(1)).pack(side=tk.RIGHT, padx=(4, 0))
+        self.view_mode = tk.StringVar(value="fault")
+        ttk.Label(fb, text="视图：").pack(side=tk.LEFT, padx=(12, 2))
+        ttk.Radiobutton(fb, text="故障视图", value="fault", variable=self.view_mode,
+                        command=self._switch_view).pack(side=tk.LEFT)
+        ttk.Radiobutton(fb, text="告警明细", value="table", variable=self.view_mode,
+                        command=self._switch_view).pack(side=tk.LEFT, padx=(4, 0))
+        ttk.Label(fb, text="级别：").pack(side=tk.LEFT, padx=(14, 2))
+        self.fsev = tk.StringVar(value="全部")
+        cb = ttk.Combobox(fb, textvariable=self.fsev, width=7, state="readonly",
+                          values=["全部", "高危", "一般", "提示"])
+        cb.pack(side=tk.LEFT)
+        cb.bind("<<ComboboxSelected>>", lambda _e: self._apply_filter())
+        ttk.Label(fb, text="搜索：").pack(side=tk.LEFT, padx=(10, 2))
+        self.fkw = tk.StringVar()
+        en = ttk.Entry(fb, textvariable=self.fkw, width=22)
+        en.pack(side=tk.LEFT)
+        en.bind("<Return>", lambda _e: self._apply_filter())
+        ttk.Button(fb, text="筛选", width=6, command=self._apply_filter).pack(side=tk.LEFT, padx=4)
+        ttk.Button(fb, text="导出 HTML", command=lambda: self._export("html")).pack(side=tk.LEFT, padx=(10, 2))
+        ttk.Button(fb, text="导出 CSV", command=lambda: self._export("csv")).pack(side=tk.LEFT)
+
+        cols = ("sev", "sig", "dev", "intf", "ev")
+        self.tree = ttk.Treeview(res, columns=cols, show="headings", height=10)
+        for c, t, w in (("sev", "级别", 58), ("sig", "信号", 165), ("dev", "设备", 125),
+                        ("intf", "接口", 145), ("ev", "证据（截断，双击看全文）", 600)):
+            self.tree.heading(c, text=t)
+            self.tree.column(c, width=w, anchor="center" if c == "sev" else "w")
+        vs = ttk.Scrollbar(res, orient=tk.VERTICAL, command=self.tree.yview)
+        self.tree.configure(yscrollcommand=vs.set)
+        self.tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        vs.pack(side=tk.RIGHT, fill=tk.Y)
+        self.vs = vs                                   # 视图切换时要一起收起
+        # ── 故障视图（默认）：给不会数通的人看的"故障卡" ──
+        self.fault_text = ScrolledText(res, height=12, wrap=tk.WORD,
+                                       font=("Microsoft YaHei UI", 10))
+        self.fault_text.tag_configure("fh", foreground="#b91c1c", font=("Microsoft YaHei UI", 11, "bold"))
+        self.fault_text.tag_configure("fm", foreground="#b45309", font=("Microsoft YaHei UI", 11, "bold"))
+        self.fault_text.tag_configure("fl", foreground="#8a6d00", font=("Microsoft YaHei UI", 10, "bold"))
+        self.fault_text.tag_configure("fsec", foreground="#1f4e79", font=("Microsoft YaHei UI", 10, "bold"))
+        self.fault_text.tag_configure("fstep", foreground="#111827")
+        self.fault_text.tag_configure("fplain", foreground="#374151")
+        self.tree.tag_configure("ring_high", foreground="#b91c1c", background="#ffebee")
+        self.tree.tag_configure("ring_med", foreground="#b45309", background="#fff7ed")
+        self.tree.tag_configure("ring_low", foreground="#8a6d00", background="#fffdf0")
+        self.tree.bind("<Double-1>", lambda _e: self._detail())
+
+        self._switch_view()                # 初始即进入"故障视图"（给不会数通的人看）
+        # ── 进度 / 状态 ─────────────────────────────────────────
+        bar = ttk.Frame(self)
+        bar.pack(fill=tk.X, padx=10, pady=(0, 8))
+        self.prog = ttk.Progressbar(bar, mode="determinate", length=220)
+        self.prog.pack(side=tk.RIGHT)
+        self.status_var = tk.StringVar(value=f"规则表：{RP.default_rules_path()}"
+                                            f"（{len(self._rules.get('signals') or {})} 组关键字符号）")
+        ttk.Label(bar, textvariable=self.status_var, foreground="#5b6b7c").pack(side=tk.LEFT)
+
+    def _load_default_commands(self) -> None:
+        cmds = RING_COMMANDS.get("huawei", [])
+        self.cmd_text.config(state=tk.NORMAL)
+        self.cmd_text.delete("1.0", tk.END)
+        self.cmd_text.insert("1.0", "\n".join(cmds))
+        self.cmd_text.config(state=tk.NORMAL)
+
+    def _commands(self) -> list[str]:
+        raw = self.cmd_text.get("1.0", tk.END)
+        return [l.strip() for l in raw.splitlines() if l.strip()]
+
+    # ══════════════════════════════════════════════════════════════
+    # 设备文件 / SSH（优先用宿主 GUI 的实现，保证行为一致）
+    # ══════════════════════════════════════════════════════════════
+
+    def _pick_devices(self) -> None:
+        p = filedialog.askopenfilename(
+            title="选择设备清单",
+            filetypes=[("设备清单", "*.txt *.xlsx *.xlsm"), ("所有文件", "*.*")])
+        if p:
+            self.dev_var.set(p)
+
+    def _pick_report(self, var: tk.StringVar) -> None:
+        p = filedialog.askopenfilename(title="选择巡检报告 CSV",
+                                       filetypes=[("报告 CSV", "*.csv"), ("所有文件", "*.*")])
+        if p:
+            var.set(p)
+
+    def _device_file(self) -> str:
+        """取设备文件：本页签填了就用它，否则借批量页的当前文件。"""
+        p = self.dev_var.get().strip()
+        if p:
+            return p
+        for attr in ("batch_filepath", "devices_file", "_devices_file"):
+            v = getattr(self.app, attr, None)
+            if v is not None:
+                v = v.get() if hasattr(v, "get") else v
+                if v:
+                    return str(v)
+        for name in ("devices.xlsx", "devices.txt"):
+            if os.path.exists(os.path.join(RP.app_dir(), name)):
+                return os.path.join(RP.app_dir(), name)
+        return ""
+
+    def _parse_devices(self, path: str):
+        """解析设备清单 → [(host, devtype, user, pwd)]；优先用宿主的解析器（支持 xlsx）。"""
+        fn = getattr(self.app, "_parse_device_file", None)
+        if callable(fn):
+            try:
+                devices, errs = fn(path)
+                if errs:
+                    self._put("warn", f"设备文件有 {len(errs)} 行无法识别（前 3 条）："
+                                      + "；".join(str(e[2]) for e in errs[:3]))
+                return [(d[0], d[1], d[2], d[3]) for d in devices]
+            except Exception as e:
+                self._put("warn", f"宿主解析器失败({e})，改用内置解析")
+        return self._parse_devices_builtin(path)
+
+    @staticmethod
+    def _parse_devices_builtin(path: str):
+        """内置兜底解析：txt `IP:user:pwd:type:"cmd,cmd"` 与 xlsx 五列（IP/用户名/密码/类型/命令）。"""
+        out = []
+        if path.lower().endswith((".xlsx", ".xlsm")):
+            try:
+                from openpyxl import load_workbook
+                wb = load_workbook(path, read_only=True, data_only=True)
+                ws = wb.active
+                for i, row in enumerate(ws.iter_rows(values_only=True)):
+                    if i == 0:
+                        continue
+                    if not row or not row[0]:
+                        continue
+                    out.append((str(row[0]).strip(), str(row[3] or "cisco").strip().lower(),
+                                str(row[1] or ""), str(row[2] or "")))
+                wb.close()
+            except Exception as e:
+                raise RuntimeError(f"读取 Excel 设备表失败：{e}（需 openpyxl）")
+            return out
+        with open(path, encoding="utf-8", errors="replace") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                parts = line.split(":")
+                if len(parts) < 2:
+                    continue
+                host, user = parts[0].strip(), parts[1].strip()
+                pwd = parts[2].strip() if len(parts) > 2 else ""
+                devtype = parts[3].strip().lower() if len(parts) > 3 else "cisco"
+                out.append((host, devtype, user, pwd))
+        return out
+
+    def _note_health(self, host: str, outputs: dict) -> None:
+        """
+        采样体检 / sampling health check.
+
+        逐条命令记录：字节数、行数、是否含 Error/Unrecognized —— 这样用户能一眼分辨
+        「命令没拿到数据」和「拿到了但没发现环路」，不再互相猜。
+        结果会进 warnings（导出报告里也能看到），并在状态栏汇总。
+        """
+        try:
+            import re as _re
+            err_pat = _re.compile(r"error|unrecognized|too many parameters|invalid input|% ?bad", _re.I)
+            rec = self._health.setdefault(host, {})
+            for cmd, out in (outputs or {}).items():
+                txt = str(out or "")
+                rec[cmd] = {"bytes": len(txt), "lines": txt.count("\n") + 1,
+                            "empty": len(txt.strip()) == 0,
+                            "error": bool(err_pat.search(txt[:400]))}
+        except Exception:
+            pass
+
+    def _health_report(self) -> list:
+        """把体检结果压成几句可读提示（供状态栏与报告）。"""
+        bad, empty, total = [], [], 0
+        for host, cmds in (self._health or {}).items():
+            for cmd, st in (cmds or {}).items():
+                total += 1
+                if st.get("empty") or st.get("error"):
+                    (bad if st.get("error") else empty).append(f"{host}·{cmd}")
+        tips = []
+        if empty:
+            tips.append(f"⚠ {len(empty)} 条命令没有返回内容（设备可能不支持或该检测项不适用）："
+                        + "、".join(empty[:3]) + ("…" if len(empty) > 3 else ""))
+        if bad:
+            tips.append(f"⚠ {len(bad)} 条命令返回了报错（多为命令不支持）："
+                        + "、".join(bad[:3]) + ("…" if len(bad) > 3 else ""))
+        if total and not tips:
+            tips.append(f"✅ 采样体检通过：{total} 条命令都有正常返回")
+        return tips
+
+    def _ssh_run(self, host: str, user: str, pwd: str, devtype: str,
+                 cmds: list[str], timeout: int = 20, big: bool = False) -> dict:
+        """
+        连一台设备把命令跑完，返回 `{命令: 输出}`。
+
+        ⚠️ 宿主 GUI 的帮助函数签名（踩过坑，别凭印象调！）：
+          * `_create_ssh_client()` → 返回已配好 host key 策略的 paramiko 客户端；
+          * `_ssh_connect(client, host, port, user, pwd, timeout=10)` → **就地连接**，
+            返回 None（**不是**返回连接对象）—— 早期版本漏传 client、还把返回值当
+            连接用，导致每台设备都抛异常、两轮全是空数据（真实踩过）。
+          * `_run_commands_via_shell(client, devtype, {标题: 命令}, timeout=30)`
+            → 返回 `{标题: 输出}`；**关分页（DISABLE_PAGING）与老设备 ssh-rsa
+            降级都在它内部处理**，本函数不用再自己发关分页命令。
+
+        优先走宿主实现（与巡检工具行为一致：关分页 / 老设备算法降级 / 友好中文报错）；
+        `app=None` 时用内置兜底实现（独立运行与单测用）。
+        """
+        app = self.app
+        use_host = app is not None and all(
+            hasattr(app, n) for n in ("_create_ssh_client", "_ssh_connect", "_run_commands_via_shell"))
+        if use_host:
+            import time as _tt
+            last_err = None
+            for attempt in (1, 2):                       # 瞬时故障（通道被拒/被掐/超时）自动重试一次
+                client = app._create_ssh_client()        # 每次都用全新连接，避免复用被污染的会话
+                try:
+                    app._ssh_connect(client, host, 22, user, pwd, timeout=timeout)
+                    title_map = {f"c{i}": c for i, c in enumerate(cmds)}
+                    raw = app._run_commands_via_shell(
+                        client, devtype, title_map,
+                        timeout=(60 if big else 30), silence_rounds=(45 if big else 20))
+                    out: dict[str, str] = {}
+                    for k, v in (raw or {}).items():
+                        if isinstance(k, str) and k.startswith("c") and k[1:].isdigit():
+                            i = int(k[1:])
+                            if i < len(cmds):
+                                out[cmds[i]] = v
+                    self._note_health(host, out)
+                    return out
+                except Exception as e:
+                    last_err = e
+                    retryable = _looks_transient(e)
+                    if attempt == 1 and retryable:
+                        _tt.sleep(2.5)               # 给设备 2.5 秒释放旧会话再试
+                        continue
+                    friendly = getattr(app, "_friendly_conn_error", None)
+                    msg = friendly(e) if callable(friendly) else str(e)
+                    raise RuntimeError(_friendly_session_error(str(msg))) from e
+                finally:
+                    try:
+                        client.close()
+                    except Exception:
+                        pass
+            raise RuntimeError(_friendly_session_error(str(last_err)))
+
+        # ── 内置兜底（无宿主时）────────────────────────────────
+        import paramiko
+        def _mk() -> "paramiko.SSHClient":
+            c = paramiko.SSHClient()
+            c.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+            return c
+        ssh = _mk()
+        try:
+            ssh.connect(hostname=host, port=22, username=user, password=pwd,
+                        timeout=timeout, banner_timeout=timeout, auth_timeout=timeout,
+                        look_for_keys=False, allow_agent=False)
+        except Exception as e1:
+            low = str(e1).lower()
+            if any(k in low for k in ("algorithm", "compatible", "agreement")):
+                try:
+                    ssh.close()
+                except Exception:
+                    pass
+                ssh = _mk()
+                ssh.connect(hostname=host, port=22, username=user, password=pwd,
+                            timeout=timeout, banner_timeout=timeout, auth_timeout=timeout,
+                            look_for_keys=False, allow_agent=False,
+                            disabled_algorithms={"keys": ("rsa-sha2-256", "rsa-sha2-512")})
+            else:
+                raise
+        outs: dict[str, str] = {}
+        try:
+            disable_page = "screen-length 0 temporary" if devtype in ("huawei", "h3c") else (
+                "terminal length 0" if devtype in ("cisco", "ruijie") else "")
+            for cmd in cmds:
+                if self._stop.is_set():
+                    break
+                outs[cmd] = self._exec_cmd(ssh, cmd, disable_page)
+        finally:
+            try:
+                ssh.close()
+            except Exception:
+                pass
+        return outs
+
+    @staticmethod
+    def _exec_cmd(ssh, cmd: str, disable_page: str = "") -> str:
+        """内置命令执行：开交互 shell、关分页、发命令、读到提示符。"""
+        import time as _t
+        chan = ssh.invoke_shell(width=512, height=1000)
+        buf = ""
+
+        def drain(seconds: float) -> str:
+            nonlocal buf
+            end = _t.time() + seconds
+            got = ""
+            while _t.time() < end:
+                if chan.recv_ready():
+                    got += chan.recv(65536).decode("utf-8", "replace")
+                    end = _t.time() + 0.6
+                else:
+                    _t.sleep(0.15)
+            buf += got
+            return got
+
+        drain(1.5)
+        if disable_page:
+            chan.send(disable_page + "\n")
+            drain(1.2)
+        buf = ""
+        chan.send(cmd + "\n")
+        drain(4.0)
+        try:
+            chan.close()
+        except Exception:
+            pass
+        return buf
+
+    # ══════════════════════════════════════════════════════════════
+    # 线程/队列
+    # ══════════════════════════════════════════════════════════════
+
+    def _put(self, kind: str, *payload) -> None:
+        self._q.put((kind, *payload))
+
+    def _poll(self) -> None:
+        try:
+            while True:
+                m = self._q.get_nowait()
+                k = m[0]
+                if k == "progress":
+                    _, txt, cur, tot = m
+                    self.prog.config(maximum=max(tot, 1), value=cur)
+                    self.status_var.set(f"{txt}（{cur}/{tot}）")
+                elif k == "done":
+                    self.result = m[1]
+                    self._finish()
+                elif k == "error":
+                    self._fail(m[1], m[2] if len(m) > 2 else "")
+                elif k in ("info", "warn"):
+                    self.status_var.set(str(m[1]))
+                    if k == "warn":
+                        self._run_warnings.append(str(m[1]))   # 留档，结束后汇总给用户看
+        except queue.Empty:
+            pass
+        self.after(150, self._poll)
+
+    def _set_busy(self, busy: bool) -> None:
+        self._busy = busy
+        state_idle = tk.DISABLED if busy else tk.NORMAL
+        self.btn_run2.config(state=state_idle)
+        self.btn_run_off.config(state=state_idle)
+        self.btn_stop2.config(state=tk.NORMAL if busy else tk.DISABLED)
+
+    def _stop_work(self) -> None:
+        self._stop.set()
+        self.status_var.set("已请求停止（本轮结束即停）")
+
+    def _enabled_ids(self) -> list[str] | None:
+        ids = [r for r, v in self.rule_vars.items() if v.get()]
+        if not ids:
+            messagebox.showwarning("提示", "至少要勾选一个检测项。", parent=self)
+            return None
+        return ids
+
+    # ══════════════════════════════════════════════════════════════
+    # A. 在线两轮采样
+    # ══════════════════════════════════════════════════════════════
+
+    def _start_online(self) -> None:
+        if self._busy:
+            return
+        dev_file = self._device_file()
+        if not dev_file or not os.path.exists(dev_file):
+            messagebox.showwarning("提示", "请先指定设备文件（txt 或 xlsx）。", parent=self)
+            return
+        cmds = self._commands()
+        if not cmds:
+            messagebox.showwarning("提示", "采样命令不能为空。", parent=self)
+            return
+        ids = self._enabled_ids()
+        if ids is None:
+            return
+        try:
+            gap_min = float(self.gap_var.get().strip())
+            workers = max(1, int(self.workers_var.get().strip()))
+        except ValueError:
+            messagebox.showwarning("提示", "两轮间隔/并发数必须是数字。", parent=self)
+            return
+        if gap_min < 0:
+            messagebox.showwarning("提示", "间隔不能为负。", parent=self)
+            return
+        if gap_min > 0 and not messagebox.askyesno(
+                "确认", f"将连设备跑两轮巡检，两轮之间等待 {gap_min:g} 分钟（期间可随时停止）。\n\n"
+                        "⚠ 巡检会登录设备执行只读查询命令，请确认已获得授权。\n\n继续吗？", parent=self):
+            return
+        self._stop.clear()
+        self.result = None
+        self._alerts = []
+        self._run_warnings = []
+        self._render([])
+        self._set_busy(True)
+        self.summary_var.set("两轮采样中…")
+        threading.Thread(target=self._work_online, args=(dev_file, cmds, ids, gap_min, workers),
+                         daemon=True).start()
+
+    def _work_online(self, dev_file: str, cmds: list[str], ids: list[str],
+                     gap_min: float, workers: int) -> None:
+        try:
+            devices = self._parse_devices(dev_file)
+            if not devices:
+                self._put("error", "设备文件里没有可用设备", ""); return
+            total = len(devices)
+            self._put("progress", f"第 1 轮采样（{total} 台）", 0, total * 2)
+
+            class_dev = self.cls_var.get()
+            r1_raw: dict[str, dict] = {}
+
+            def one(d):
+                host, devtype, user, pwd = d
+                try:
+                    return host, self._ssh_run(host, user, pwd, devtype, cmds), None
+                except Exception as e:
+                    return host, {}, str(e)
+
+            from concurrent.futures import ThreadPoolExecutor, as_completed
+            done = 0
+            with ThreadPoolExecutor(max_workers=workers) as ex:
+                futs = [ex.submit(one, d) for d in devices]
+                for fu in as_completed(futs):
+                    host, outs, err = fu.result()
+                    done += 1
+                    if err:
+                        self._put("warn", f"{host} 第 1 轮失败：{err[:120]}")
+                    r1_raw[host] = outs
+                    self._put("progress", "第 1 轮采样", done, total * 2)
+                    if self._stop.is_set():
+                        break
+
+            if self._stop.is_set():
+                self._put("error", "操作已停止", ""); return
+
+            if gap_min > 0:
+                import time as _t
+                wait_s = gap_min * 60
+                t0 = _t.time()
+                while _t.time() - t0 < wait_s:
+                    if self._stop.is_set():
+                        self._put("error", "操作已停止", ""); return
+                    left = int(wait_s - (_t.time() - t0))
+                    self._put("progress", f"等待第 2 轮（剩余 {left // 60} 分 {left % 60} 秒）",
+                              total, total * 2)
+                    _t.sleep(2)
+
+            self._put("progress", "第 2 轮采样", total, total * 2)
+            r2_raw: dict[str, dict] = {}
+            import time as _t
+            t_round1_start = _t.time()
+            done = 0
+            with ThreadPoolExecutor(max_workers=workers) as ex:
+                futs = [ex.submit(one, d) for d in devices]
+                for fu in as_completed(futs):
+                    host, outs, err = fu.result()
+                    done += 1
+                    if err:
+                        self._put("warn", f"{host} 第 2 轮失败：{err[:120]}")
+                    r2_raw[host] = outs
+                    self._put("progress", "第 2 轮采样", total + done, total * 2)
+                    if self._stop.is_set():
+                        break
+
+            # 采样窗口：用两轮的开始时刻差（比"配置的间隔"更真实）
+            interval = max(1.0, gap_min * 60) if gap_min > 0 else max(1.0, _t.time() - t_round1_start)
+            self._put("progress", "解析并判定…", total * 2, total * 2)
+            s1, s2 = {}, {}
+            for host in r1_raw:
+                t = next((d[1] for d in devices if d[0] == host), "huawei")
+                s1[host] = RP.parse_device_sample(r1_raw.get(host, {}), device=host, vendor=t,
+                                                 ts=0.0, device_class=class_dev)
+                s2[host] = RP.parse_device_sample(r2_raw.get(host, {}), device=host, vendor=t,
+                                                 ts=interval, device_class=class_dev)
+
+            res = RA.analyze_samples(s1, s2, rules=self._rules, enabled=ids,
+                                     device_class=class_dev, interval_seconds=interval,
+                                     progress=lambda m, c, t: self._put("progress", m, c, t))
+            self._put("done", res)
+        except Exception as e:
+            import traceback
+            self._put("error", str(e), traceback.format_exc())
+
+    # ══════════════════════════════════════════════════════════════
+    # B. 离线分析
+    # ══════════════════════════════════════════════════════════════
+
+    def _start_offline(self) -> None:
+        if self._busy:
+            return
+        r1, r2 = self.r1_var.get().strip(), self.r2_var.get().strip()
+        if not r1 or not os.path.exists(r1):
+            messagebox.showwarning("提示", "请选择第 1 期报告 CSV。", parent=self)
+            return
+        if r2 and not os.path.exists(r2):
+            messagebox.showwarning("提示", "第 2 期报告不存在。", parent=self)
+            return
+        ids = self._enabled_ids()
+        if ids is None:
+            return
+        self._stop.clear()
+        self.result = None
+        self._alerts = []
+        self._run_warnings = []
+        self._render([])
+        self._set_busy(True)
+        self.summary_var.set("分析中…")
+        threading.Thread(target=self._work_offline,
+                         args=(r1, r2 or None, ids, self.cls_var.get()), daemon=True).start()
+
+    def _work_offline(self, r1: str, r2: str | None, ids: list[str], cls: str) -> None:
+        try:
+            res = RA.analyze_reports(r1, r2, rules=self._rules, enabled=ids, device_class=cls,
+                                     progress=lambda m, c, t: self._put("progress", m, c, t))
+            self._put("done", res)
+        except Exception as e:
+            import traceback
+            self._put("error", str(e), traceback.format_exc())
+
+    # ══════════════════════════════════════════════════════════════
+    # 渲染 / 跳转 / 详情 / 导出
+    # ══════════════════════════════════════════════════════════════
+
+    def _finish(self) -> None:
+        self._set_busy(False)
+        self.prog.config(value=self.prog["maximum"])
+        self._apply_filter()
+        res = self.result or {}
+        self._render_faults(res.get("faults"))
+        s = res.get("summary", {})
+        two = bool(s.get("two_round"))
+        mode = "两轮差分" if two else "单轮快照"
+        self.summary_var.set(
+            f"{mode} ｜ 设备 {s.get('devices', 0)} 台（{s.get('devices_with_alerts', 0)} 台有告警）"
+            f" ｜ 高危 {s.get('high', 0)} / 一般 {s.get('medium', 0)} / 提示 {s.get('low', 0)}"
+            f" ｜ 间隔 {s.get('interval_text', '—')}")
+
+        # 采样数据统计：让"到底跑了几轮、每轮拿到几台的数据"一眼可见
+        def _filled(sm):
+            s_ = sm or {}
+            n = sum(1 for v in s_.values()
+                    if (v.get("interfaces") or v.get("macs") or v.get("logs")))
+            return n, len(s_)
+        n1, m1 = _filled(res.get("samples1"))
+        n2, m2 = _filled(res.get("samples2")) if two else (0, 0)
+        warns = list(res.get("warnings") or []) + list(self._run_warnings)
+        tip = f"数据：第1轮 {n1}/{m1} 台有数据" + (f"；第2轮 {n2}/{m2} 台有数据" if two else "")
+        _nf = len(res.get("faults") or [])
+        self.status_var.set(f"完成：共 {s.get('total', 0)} 条告警 → {_nf} 个故障"
+                            f"（严重 {s.get('faults_high', 0)}） ｜ {tip}"
+                            + (f" ｜ 过程提示 {len(warns)} 条" if warns else ""))
+
+        if not s.get("total"):
+            if n1 == 0 or (two and n2 == 0):
+                which = "两轮都跑了，但" if two else ""
+                msg = (f"{which}**没有解析到任何数据** —— 说明设备没连上，或命令没返回内容。\n\n"
+                       f"{tip}\n\n")
+                msg += ("失败/提示记录（最多 8 条）：\n" + "\n".join(f"· {w}" for w in warns[:8])
+                        if warns else "（没有失败记录 —— 可能是设备返回了空内容，或命令全部不被该平台支持）")
+            elif two:
+                msg = (f"✅ 两轮差分完成，**未发现告警** —— 说明这两轮之间没有明显变化。\n\n"
+                       f"{tip}；间隔 {s.get('interval_text', '—')}\n\n"
+                       "（若你预期应该有异常，可以：把间隔拉长重跑 / 检查检测项是否勾选 / 看设备\n"
+                       "  的「检测能力提示」——某些命令该平台不支持）")
+            else:
+                msg = ("单轮快照未发现告警。\n\n增长类问题（MAC 漂移 / CRC 增长 / 广播速率 / "
+                       "链路震荡）**需要两份数据对比**：\n"
+                       "· 用「A. 在线两轮采样」设两轮间隔跑一次，或\n"
+                       "· 用「B. 离线分析」给两份不同时间的报告")
+            messagebox.showinfo("结果", msg, parent=self)
+        elif warns:
+            messagebox.showwarning("提示", f"本轮有 {len(warns)} 条过程提示/失败记录：\n\n"
+                                          + "\n".join(f"· {w}" for w in warns[:8]),
+                                   parent=self)
+
+    def _fail(self, msg: str, tb: str) -> None:
+        self._set_busy(False)
+        self.status_var.set("失败：" + msg[:160])
+        messagebox.showerror("出错", f"{msg}\n\n{tb[-600:]}", parent=self)
+
+    def _apply_filter(self) -> None:
+        if not self.result:
+            return
+        want, kw = self.fsev.get(), self.fkw.get().strip().lower()
+        rows = []
+        for a in self.result.get("alerts", []):
+            if want != "全部" and RA.SEVERITY_CN.get(a.get("severity")) != want:
+                continue
+            blob = f"{a.get('signal','')}{a.get('device','')}{a.get('interface','')}{a.get('evidence','')}".lower()
+            if kw and kw not in blob:
+                continue
+            rows.append(a)
+        self._render(rows)
+
+    # ── 双视图：故障卡（给人看）/ 告警明细（给技术看）─────────────────
+    def _switch_view(self) -> None:
+        """在「故障视图」与「告警明细」之间切换 / switch between fault cards and the raw alert table."""
+        if self.view_mode.get() == "fault":
+            self.tree.pack_forget()
+            self.vs.pack_forget()
+            self.fault_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        else:
+            self.fault_text.pack_forget()
+            self.tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+            self.vs.pack(side=tk.RIGHT, fill=tk.Y)
+
+    def _render_faults(self, faults: list[dict] | None) -> None:
+        """
+        把聚合后的**故障**渲染成"人话卡片" / render aggregated faults as plain-language cards.
+
+        默认展示故障卡：不懂网络的人只要照「怎么处理」的步骤做即可；技术细节切到「告警明细」。
+        """
+        if not hasattr(self, "fault_text"):
+            return
+        self.fault_text.configure(state=tk.NORMAL)
+        self.fault_text.delete("1.0", tk.END)
+        if RE is None:
+            self.fault_text.insert(tk.END, "（故障卡模块 ring_events.py 缺失，已降级为告警明细）")
+            self.fault_text.configure(state=tk.DISABLED)
+            return
+        faults = faults or []
+        header = f"🔎 故障总览：发现 {len(faults)} 个故障"
+        if faults:
+            header += (f"（严重 {sum(1 for f in faults if f['severity'] == 'high')}"
+                       f" / 一般 {sum(1 for f in faults if f['severity'] == 'medium')}"
+                       f" / 提示 {sum(1 for f in faults if f['severity'] == 'low')}）")
+        self.fault_text.insert(tk.END, header + "\n", "fsec")
+        self.fault_text.insert(tk.END, "=" * 64 + "\n", "fplain")
+        if not faults:
+            self.fault_text.insert(tk.END, "✅ 未发现故障级问题。\n", "fl")
+        for i, f in enumerate(faults, 1):
+            tag = {"high": "fh", "medium": "fm", "low": "fl"}.get(f.get("severity"), "fplain")
+            icon = {"high": "❗", "medium": "⚠️", "low": "ℹ️"}.get(f.get("severity"), "·")
+            title = f"{icon} 故障 {i}｜{f.get('title', '')}"
+            if f.get("first"):
+                title += "     ← 先处理这个"
+            self.fault_text.insert(tk.END, title + "\n", tag)
+            self.fault_text.insert(tk.END, "─" * 64 + "\n", "fplain")
+            conf = {"high": "高", "medium": "中", "low": "低"}.get(f.get("confidence"), "低")
+            self.fault_text.insert(tk.END, f"故障设备：{f.get('device', '—')}      置信度：{conf}"
+                                           f"      涉及告警：{len(f.get('alerts') or [])} 条\n", "fplain")
+            for sec, key in (("【现象】", "symptoms"), ("【判断】", "cause")):
+                self.fault_text.insert(tk.END, sec + "\n", "fsec")
+                val = f.get(key)
+                if isinstance(val, list):
+                    for v in val:
+                        self.fault_text.insert(tk.END, f"  · {v}\n", "fplain")
+                else:
+                    self.fault_text.insert(tk.END, f"  {val or '—'}\n", "fplain")
+            self.fault_text.insert(tk.END, "【怎么处理】\n", "fsec")
+            for st in (f.get("steps") or []):
+                self.fault_text.insert(tk.END, f"  {st.replace('**', '')}\n", "fstep")
+            self.fault_text.insert(tk.END, "\n")
+        self.fault_text.insert(tk.END, "术语小抄：MAC＝设备的网卡身份；端口＝插网线的口；VLAN＝网段。"
+                                       "技术上要看原始证据，请切到「告警明细」。\n", "fplain")
+        self.fault_text.configure(state=tk.DISABLED)
+
+    def _render(self, rows: list[dict]) -> None:
+        self._alerts = rows
+        self.tree.delete(*self.tree.get_children())
+        for a in rows:
+            ev = str(a.get("evidence", ""))
+            self.tree.insert("", tk.END, values=(
+                RA.SEVERITY_CN.get(a.get("severity"), ""), a.get("signal", ""),
+                a.get("device", ""), a.get("interface", ""),
+                ev[:150] + ("…" if len(ev) > 150 else "")),
+                tags=(SEV_TAG.get(a.get("severity"), ""),))
+        if rows:
+            self.tree.selection_set(self.tree.get_children()[0])
+
+    def _jump(self, direction: int) -> None:
+        kids = self.tree.get_children()
+        if not kids:
+            self.status_var.set("没有可跳转的告警行")
+            return
+        cur = self.tree.selection()
+        idx = kids.index(cur[0]) if cur and cur[0] in kids else (-1 if direction > 0 else 0)
+        idx = (idx + direction) % len(kids)
+        self.tree.selection_set(kids[idx]); self.tree.focus(kids[idx]); self.tree.see(kids[idx])
+        self.status_var.set(f"第 {idx + 1} / {len(kids)} 条：{self.tree.item(kids[idx], 'values')[1]}")
+
+    def _detail(self) -> None:
+        sel = self.tree.selection()
+        if not sel:
+            return
+        a = self._alerts[self.tree.get_children().index(sel[0])]
+        w = tk.Toplevel(self)
+        w.title(f"告警详情 - {a.get('signal','')} @ {a.get('device','')}")
+        w.geometry("820x520")
+        head = (f"级别：{RA.SEVERITY_CN.get(a.get('severity'), '')}"
+                f"（置信度 {a.get('confidence','?')}）\n"
+                f"信号：{a.get('signal','')}    规则：{a.get('rule_id','')}\n"
+                f"设备：{a.get('device','')}    接口：{a.get('interface','') or '—'}\n"
+                f"增量：{a.get('delta')}    阈值：{a.get('threshold')}")
+        ttk.Label(w, text=head, justify="left", font=("Microsoft YaHei UI", 9, "bold"),
+                  foreground="#1f4e79").pack(anchor="w", padx=12, pady=(12, 6))
+        ttk.Label(w, text="原始证据：").pack(anchor="w", padx=12)
+        t1 = ScrolledText(w, height=11, font=("Consolas", 9))
+        t1.pack(fill=tk.BOTH, expand=True, padx=12, pady=(2, 6))
+        t1.insert("1.0", str(a.get("evidence", ""))); t1.config(state=tk.DISABLED)
+        ttk.Label(w, text="建议动作：").pack(anchor="w", padx=12)
+        t2 = ScrolledText(w, height=6, font=("Microsoft YaHei UI", 9))
+        t2.pack(fill=tk.BOTH, expand=True, padx=12, pady=(2, 6))
+        t2.insert("1.0", str(a.get("advice", ""))); t2.config(state=tk.DISABLED)
+
+        def cp() -> None:
+            self.clipboard_clear()
+            self.clipboard_append(f"{head}\n\n证据：\n{a.get('evidence','')}\n\n建议：\n{a.get('advice','')}")
+            self.status_var.set("已复制该条告警到剪贴板")
+        ttk.Button(w, text="复制到剪贴板", command=cp).pack(pady=(0, 10))
+
+    def _export(self, kind: str) -> None:
+        if not self.result:
+            messagebox.showwarning("提示", "请先跑一次分析。", parent=self)
+            return
+        ts = RA.datetime.now().strftime("%Y%m%d_%H%M%S")
+        base = self._last_export_dir or os.path.join(RP.app_dir(), "reports")
+        os.makedirs(base, exist_ok=True)
+        if kind == "html":
+            fp = filedialog.asksaveasfilename(
+                title="导出 HTML 报告", defaultextension=".html",
+                filetypes=[("HTML 文件", "*.html"), ("所有文件", "*.*")],
+                initialdir=base, initialfile=f"环路告警报告_{ts}.html")
+            if not fp:
+                return
+            RA.alerts_to_html(self.result, fp, tool_name="环路 / 异常告警")
+        else:
+            fp = filedialog.asksaveasfilename(
+                title="导出 CSV 清单", defaultextension=".csv",
+                filetypes=[("CSV 文件", "*.csv"), ("所有文件", "*.*")],
+                initialdir=base, initialfile=f"环路告警清单_{ts}.csv")
+            if not fp:
+                return
+            RA.alerts_to_csv(self.result, fp)
+        self._last_export_dir = os.path.dirname(fp)
+        self.status_var.set(f"已导出：{fp}")
+        if messagebox.askyesno("导出完成", f"已保存到：\n{fp}\n\n现在打开吗？", parent=self):
+            try:
+                os.startfile(fp)          # noqa: S606
+            except Exception as e:
+                messagebox.showerror("打开失败", str(e), parent=self)
+
+    def _open_rules(self) -> None:
+        p = RP.default_rules_path()
+        if not os.path.exists(p):
+            self._reload_rules()
+        try:
+            os.startfile(p)               # noqa: S606
+            self.status_var.set(f"已打开规则表：{p}（改完点「重新加载规则」）")
+        except Exception as e:
+            messagebox.showerror("打开失败", f"{p}\n{e}", parent=self)
+
+    def _reload_rules(self) -> None:
+        self._rules = RP.load_rules()
+        w = self._rules.get("_warnings") or []
+        self.status_var.set("规则表已重新加载" + ("；" + "；".join(w) if w else ""))
